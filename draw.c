@@ -39,12 +39,25 @@ const Theme THEMES[N_THEMES] = {
 };
 
 static const char *QUOTES[] = {
-    "Stay here.", "One thing.", "Breathe slow.", "Begin now.",
-    "Keep going.", "Small steps.", "Easy focus.", "Just this.",
-    "Quiet mind.", "Soft effort.", "Time flows.", "Hold steady.",
-    "No rush.", "Be present.", "Gentle focus.", "Finish calmly.",
+    "You have more in you. Use it.",
+    "Stay hungry, stay light.",
+    "Build the day you want.",
+    "Make one clean move now.",
+    "Let your effort lift you.",
+    "Small wins become momentum.",
+    "Want it calmly. Work for it.",
+    "You are closer than you think.",
+    "Turn hunger into steady proof.",
+    "Keep your head clear and move.",
+    "The work is waiting for you.",
+    "Be bold, but keep breathing.",
+    "Choose the next strong step.",
+    "Make today count without rushing.",
+    "Your future needs this version of you.",
+    "Quiet focus. Real progress.",
 };
 #define N_QUOTES ((int)(sizeof(QUOTES)/sizeof(QUOTES[0])))
+#define QUOTE_MORPH_MS   950
 
 /* ── Color utilities ───────────────────────────────────── */
 
@@ -162,6 +175,159 @@ static void xft_draw_string(App *app, XftDraw *draw, XftFont *font,
 static void xft_draw_string_centered(App *app, XftDraw *draw, XftFont *font,
                                      unsigned long rgb, int cx, int y, const char *s) {
     xft_draw_string(app, draw, font, rgb, cx - text_width(app, font, s)/2, y, s);
+}
+
+static double ease_smoothstep(double t) {
+    if (t <= 0.0) return 0.0;
+    if (t >= 1.0) return 1.0;
+    return t * t * (3.0 - 2.0 * t);
+}
+
+static int next_quote_idx(int cur) {
+    if (N_QUOTES <= 1) return 0;
+    int idx = rand() % N_QUOTES;
+    if (idx == cur) idx = (idx + 1) % N_QUOTES;
+    return idx;
+}
+
+static long quote_read_ms(const char *text) {
+    int words = 0, chars = 0, in_word = 0;
+    for (const char *p = text; p && *p; p++) {
+        unsigned char ch = (unsigned char)*p;
+        if (!isspace(ch)) chars++;
+        if (isspace(ch)) {
+            in_word = 0;
+        } else if (!in_word) {
+            words++;
+            in_word = 1;
+        }
+    }
+
+    long ms = 1500 + words * 360 + chars * 18;
+    if (ms < 2800) ms = 2800;
+    if (ms > 6200) ms = 6200;
+    return ms;
+}
+
+static void advance_quote(App *app, long now_ms) {
+    if (app->quote_idx < 0 || app->quote_idx >= N_QUOTES) {
+        app->quote_idx = rand() % N_QUOTES;
+        app->quote_prev_idx = app->quote_idx;
+        app->quote_cycle_ts = now_ms;
+        return;
+    }
+    if (app->quote_cycle_ts <= 0)
+        app->quote_cycle_ts = now_ms;
+
+    long elapsed = now_ms - app->quote_cycle_ts;
+    if (elapsed < quote_read_ms(QUOTES[app->quote_idx])) return;
+
+    app->quote_prev_idx = app->quote_idx;
+    app->quote_idx = next_quote_idx(app->quote_idx);
+    app->quote_cycle_ts = now_ms;
+}
+
+static Pixmap render_quote_image(App *app, Drawable target, XftFont *font,
+                                 const Theme *th, int w, int h, const char *text) {
+    Pixmap pm = XCreatePixmap(app->dpy, target, w, h, app->depth);
+    fill_rect(app, pm, th->bg, 0, 0, w, h);
+
+    XftDraw *xd = XftDrawCreate(app->dpy, pm, app->vis, app->cmap);
+    if (xd) {
+        int x = (w - text_width(app, font, text)) / 2;
+        int y = (h + font->ascent - font->descent) / 2;
+        xft_draw_string(app, xd, font, th->accent, x, y, text);
+        XftDrawDestroy(xd);
+    }
+
+    return pm;
+}
+
+static void composite_quote_image(App *app, Drawable src, Drawable dst,
+                                  int src_w, int src_h,
+                                  int dst_x, int dst_y, int dst_w, int dst_h,
+                                  double alpha) {
+    if (alpha <= 0.01 || dst_w <= 0 || dst_h <= 0) return;
+    if (alpha > 1.0) alpha = 1.0;
+
+    XRenderPictFormat *fmt = XRenderFindVisualFormat(app->dpy, app->vis);
+    if (!fmt) {
+        XCopyArea(app->dpy, src, dst, app->gc, 0, 0, src_w, src_h, dst_x, dst_y);
+        return;
+    }
+
+    Picture sp = XRenderCreatePicture(app->dpy, src, fmt, 0, NULL);
+    Picture dp = XRenderCreatePicture(app->dpy, dst, fmt, 0, NULL);
+    XRenderColor mask_col = { 0xffff, 0xffff, 0xffff,
+                              (unsigned short)(alpha * 65535.0 + 0.5) };
+    Picture mask = XRenderCreateSolidFill(app->dpy, &mask_col);
+
+    XTransform xf;
+    memset(&xf, 0, sizeof(xf));
+    xf.matrix[0][0] = XDoubleToFixed((double)src_w / (double)dst_w);
+    xf.matrix[1][1] = XDoubleToFixed((double)src_h / (double)dst_h);
+    xf.matrix[2][2] = XDoubleToFixed(1.0);
+    XRenderSetPictureTransform(app->dpy, sp, &xf);
+    XRenderSetPictureFilter(app->dpy, sp, FilterBilinear, NULL, 0);
+
+    XRenderComposite(app->dpy, PictOpOver,
+                     sp, mask, dp, 0, 0, 0, 0,
+                     dst_x, dst_y, dst_w, dst_h);
+    XRenderFreePicture(app->dpy, mask);
+    XRenderFreePicture(app->dpy, sp);
+    XRenderFreePicture(app->dpy, dp);
+}
+
+static void draw_quote_morph(App *app, XftDraw *draw, XftFont *font,
+                             Drawable buf, const Theme *th,
+                             int cx, int baseline, int max_w) {
+    (void)draw;
+    if (!font) return;
+
+    long now_ms = ms_now();
+    advance_quote(app, now_ms);
+
+    const char *cur = QUOTES[app->quote_idx];
+    long elapsed = now_ms - app->quote_cycle_ts;
+    if (elapsed < 0) elapsed = QUOTE_MORPH_MS;
+
+    int img_w = max_w;
+    int img_h = font->ascent + font->descent + 18;
+    int img_x = cx - img_w / 2;
+    int img_y = baseline - font->ascent - 9;
+
+    if (app->quote_prev_idx == app->quote_idx || elapsed >= QUOTE_MORPH_MS) {
+        Pixmap cur_img = render_quote_image(app, buf, font, th, img_w, img_h, cur);
+        XCopyArea(app->dpy, cur_img, buf, app->gc, 0, 0, img_w, img_h, img_x, img_y);
+        XFreePixmap(app->dpy, cur_img);
+        return;
+    }
+
+    const char *prev = QUOTES[app->quote_prev_idx];
+    double t = ease_smoothstep((double)elapsed / (double)QUOTE_MORPH_MS);
+    double pulse = sin(t * M_PI);
+    double prev_a = 1.0 - t;
+    double cur_a  = t;
+    double prev_scale = 1.0 + 0.018 * pulse;
+    double cur_scale = 1.0 - 0.018 * pulse;
+
+    Pixmap prev_img = render_quote_image(app, buf, font, th, img_w, img_h, prev);
+    Pixmap cur_img  = render_quote_image(app, buf, font, th, img_w, img_h, cur);
+
+    int prev_w = (int)(img_w * prev_scale + 0.5);
+    int prev_h = (int)(img_h * prev_scale + 0.5);
+    int cur_w  = (int)(img_w * cur_scale + 0.5);
+    int cur_h  = (int)(img_h * cur_scale + 0.5);
+
+    composite_quote_image(app, prev_img, buf, img_w, img_h,
+                          cx - prev_w / 2, img_y + (img_h - prev_h) / 2,
+                          prev_w, prev_h, prev_a);
+    composite_quote_image(app, cur_img, buf, img_w, img_h,
+                          cx - cur_w / 2, img_y + (img_h - cur_h) / 2,
+                          cur_w, cur_h, cur_a);
+
+    XFreePixmap(app->dpy, prev_img);
+    XFreePixmap(app->dpy, cur_img);
 }
 
 /* Render text stretched to exactly (area_w × area_h) via XRender bilinear scale */
@@ -382,11 +548,11 @@ void draw_config(App *app) {
     if (!qf) qf = get_font(app, 16, 0);
     int quote_h = qf ? qf->ascent + qf->descent : 22;
 
-    const int logo_r          = 70, logo_h = 140, logo_gap = 14;
-    const int input_h         = 54, input_gap = 18;
-    const int chip_h          = 24, chip_gap = 18;
+    const int logo_r          = 155, logo_h = 310, logo_gap = 30;
+    const int input_h         = 54, input_gap = 34;
+    const int chip_h          = 24, chip_gap = 24;
     /* Until badge: small label line + big countdown line + padding ≈ 62px */
-    const int until_badge_h   = 62, until_badge_gap = 12;
+    const int until_badge_h   = 62, until_badge_gap = 20;
 
     int content_h = logo_h + logo_gap + quote_h + input_gap + input_h;
     if (has_chips) content_h += chip_gap + chip_h;
@@ -499,9 +665,7 @@ void draw_config(App *app) {
 
     /* ── Quote ─────────────────────────────────────────── */
     {
-        static int q_idx = -1;
-        if (q_idx < 0) q_idx = rand() % N_QUOTES;
-        if (qf) xft_draw_string_centered(app, draw, qf, th->accent, W/2, q_base, QUOTES[q_idx]);
+        draw_quote_morph(app, draw, qf, buf, th, W/2, q_base, W - 48);
     }
 
     /* ── Input field ───────────────────────────────────── */

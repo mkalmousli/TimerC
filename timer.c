@@ -552,6 +552,9 @@ static int app_init(App *app) {
     app->session_id = 0;
     app->blink_on   = 1;
     app->blink_ts   = ms_now();
+    app->quote_idx = -1;
+    app->quote_prev_idx = -1;
+    app->quote_cycle_ts = 0;
 
     pthread_mutex_init(&app->audio_lock, NULL);
 

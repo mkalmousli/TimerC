@@ -52,7 +52,7 @@
 
 /* Config window dimensions */
 #define CFG_W   500
-#define CFG_H   480
+#define CFG_H   760
 
 /* Mini timer default dimensions */
 #define MINI_W        250
@@ -200,6 +200,9 @@ typedef struct {
     int        cursor_pos;
     int        cursor_blink;
     long       cursor_blink_ts;
+    int        quote_idx;
+    int        quote_prev_idx;
+    long       quote_cycle_ts;
 
     /* Task / until */
     char       task[MAX_TASK];
