@@ -1152,7 +1152,7 @@ void create_timer_window(App *app) {
         app->tmr_x = X; app->tmr_y = Y;
 
         XSetWindowAttributes swa;
-        swa.override_redirect = True;
+        swa.override_redirect = False;
         swa.background_pixel  = rgb_pixel(app, th->bg);
         swa.border_pixel      = 0;
         swa.colormap          = app->cmap;
@@ -1161,13 +1161,24 @@ void create_timer_window(App *app) {
         app->tmr_win = XCreateWindow(app->dpy, root, X, Y, W, H, 0,
             app->depth, InputOutput, app->vis,
             CWOverrideRedirect|CWBackPixel|CWBorderPixel|CWColormap|CWEventMask, &swa);
+
+        XWMHints hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.flags = InputHint;
+        hints.input = False;
+        XSetWMHints(app->dpy, app->tmr_win, &hints);
+
+        Atom states[3] = {
+            app->net_wm_state_fullscreen,
+            app->net_wm_state_above,
+            app->net_wm_state_skip_taskbar
+        };
+        XChangeProperty(app->dpy, app->tmr_win, app->net_wm_state,
+                        XA_ATOM, 32, PropModeReplace, (unsigned char *)states, 3);
     }
 
     XStoreName(app->dpy, app->tmr_win, "Timer");
     XMapRaised(app->dpy, app->tmr_win);
-    /* Return focus to the root so the timer window never steals keyboard focus.
-     * The user interacts with it via mouse (drag, clicks) — not keyboard. */
-    XSetInputFocus(app->dpy, DefaultRootWindow(app->dpy), RevertToNone, CurrentTime);
     XFlush(app->dpy);
     app->tmr_xft = make_xft_draw(app, app->tmr_win);
 }

@@ -34,6 +34,28 @@ void detect_monitor(App *app, int ptr_x, int ptr_y) {
     if (!XRRQueryExtension(app->dpy, &event_base, &error_base)) return;
 
     Window root = DefaultRootWindow(app->dpy);
+
+    int rr_major = 0, rr_minor = 0;
+    if (XRRQueryVersion(app->dpy, &rr_major, &rr_minor) &&
+        (rr_major > 1 || (rr_major == 1 && rr_minor >= 5))) {
+        int nmon = 0;
+        XRRMonitorInfo *monitors = XRRGetMonitors(app->dpy, root, True, &nmon);
+        if (monitors) {
+            for (int i = 0; i < nmon; i++) {
+                XRRMonitorInfo *mi = &monitors[i];
+                if (mi->width <= 0 || mi->height <= 0) continue;
+                if (ptr_x >= mi->x && ptr_x < mi->x + mi->width &&
+                    ptr_y >= mi->y && ptr_y < mi->y + mi->height) {
+                    app->mon_x = mi->x; app->mon_y = mi->y;
+                    app->mon_w = mi->width; app->mon_h = mi->height;
+                    XRRFreeMonitors(monitors);
+                    return;
+                }
+            }
+            XRRFreeMonitors(monitors);
+        }
+    }
+
     XRRScreenResources *res = XRRGetScreenResourcesCurrent(app->dpy, root);
     if (!res) return;
 
