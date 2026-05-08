@@ -51,8 +51,8 @@
 #define MAX_FONT_CACHE  64
 
 /* Config window dimensions */
-#define CFG_W   440
-#define CFG_H   300
+#define CFG_W   500
+#define CFG_H   480
 
 /* Mini timer default dimensions */
 #define MINI_W        250

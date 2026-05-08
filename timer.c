@@ -237,13 +237,12 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
     KeySym ks;
     XLookupString(ev, buf, sizeof(buf)-1, &ks, NULL);
 
-    if ((ev->state & ControlMask) && (ks == XK_t || ks == XK_T)) {
+    /* Tab (or Ctrl+T) cycles through themes */
+    if (ks == XK_Tab ||
+        ((ev->state & ControlMask) && (ks == XK_t || ks == XK_T))) {
         app->theme_idx = (app->theme_idx + 1) % N_THEMES;
         app_log(app, "INFO", "Theme: %s", THEMES[app->theme_idx].name);
         play_cue(app, "resume");
-        XSetWindowBackground(app->dpy, app->cfg_win,
-                             /* Refresh background — draw_config will fill properly */
-                             0x000000);
         draw_config(app);
         return;
     }
@@ -317,14 +316,29 @@ static void handle_event(App *app, XEvent *ev) {
         case Expose:
             if (ev->xexpose.count == 0) draw_config(app);
             break;
+        case MapNotify:
+            /* Window is now viewable — safe to grab keyboard focus. */
+            app->cfg_focused = 1;
+            XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
+            draw_config(app);
+            break;
         case FocusIn:
-            /* Ignore transient grabs (e.g. mouse button press); only real focus matters */
-            if (ev->xfocus.mode != NotifyGrab && ev->xfocus.mode != NotifyUngrab) {
+            /* Accept all real FocusIn events.
+             * Exclude detail=NotifyPointer/Root which are virtual pointer events,
+             * not a real keyboard-focus grant. */
+            if (ev->xfocus.detail != NotifyPointer &&
+                ev->xfocus.detail != NotifyPointerRoot) {
                 if (!app->cfg_focused) { app->cfg_focused = 1; draw_config(app); }
             }
             break;
         case FocusOut:
-            if (ev->xfocus.mode != NotifyGrab && ev->xfocus.mode != NotifyUngrab) {
+            /* Go grey on any real focus departure.
+             * Exclude: child-window virtuals (Inferior), pointer virtuals,
+             * and the transient release after a grab (NotifyUngrab). */
+            if (ev->xfocus.detail != NotifyInferior      &&
+                ev->xfocus.detail != NotifyPointer        &&
+                ev->xfocus.detail != NotifyPointerRoot    &&
+                ev->xfocus.mode   != NotifyUngrab) {
                 if (app->cfg_focused) { app->cfg_focused = 0; draw_config(app); }
             }
             break;
@@ -332,8 +346,8 @@ static void handle_event(App *app, XEvent *ev) {
             handle_config_key(app, &ev->xkey);
             break;
         case ButtonPress:
-            /* Restore keyboard focus — override_redirect windows don't get
-             * it automatically after another window takes it. */
+            /* Explicitly restore keyboard focus — override_redirect windows do
+             * not receive it automatically when another window takes it. */
             XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
             if (ev->xbutton.button == Button2) {
                 play_cue(app, "close");
@@ -475,12 +489,14 @@ static void handle_event(App *app, XEvent *ev) {
 
 static void do_config_tick(App *app) {
     long now_ms = ms_now();
+    /* Cursor blink every 530 ms */
     if (now_ms - app->cursor_blink_ts > 530) {
         app->cursor_blink = !app->cursor_blink;
         app->cursor_blink_ts = now_ms;
-        if (app->cfg_win && app->state == STATE_CONFIG)
-            draw_config(app);
     }
+    /* Redraw every tick so the live clock stays current */
+    if (app->cfg_win && app->state == STATE_CONFIG)
+        draw_config(app);
 }
 
 /* ── Main event loop ───────────────────────────────────── */

@@ -382,8 +382,8 @@ void draw_config(App *app) {
     if (!qf) qf = get_font(app, 16, 0);
     int quote_h = qf ? qf->ascent + qf->descent : 22;
 
-    const int logo_r          = 22, logo_h = 44, logo_gap = 12;
-    const int input_h         = 54, input_gap = 20;
+    const int logo_r          = 70, logo_h = 140, logo_gap = 14;
+    const int input_h         = 54, input_gap = 18;
     const int chip_h          = 24, chip_gap = 18;
     /* Until badge: small label line + big countdown line + padding ≈ 62px */
     const int until_badge_h   = 62, until_badge_gap = 12;
@@ -401,24 +401,100 @@ void draw_config(App *app) {
     int ul_top = has_chips ? ch_top + chip_h + until_badge_gap
                            : in_top + input_h + until_badge_gap;
 
-    /* ── Analog clock logo ─────────────────────────────── */
+    /* ── Live analog clock logo ─────────────────────────── */
     {
-        int r = logo_r, lx = W/2;
+        /* Sub-second precision for smooth continuous hand sweep */
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        time_t raw = ts.tv_sec;
+        struct tm *tm_info = localtime(&raw);
+        double secs_f  = tm_info->tm_sec  + ts.tv_nsec / 1e9;
+        double mins_f  = tm_info->tm_min  + secs_f  / 60.0;
+        double hours_f = (tm_info->tm_hour % 12) + mins_f / 60.0;
+
+        double ang_h = hours_f * TAU / 12.0;
+        double ang_m = mins_f  * TAU / 60.0;
+        double ang_s = secs_f  * TAU / 60.0;
+
+        int r = logo_r, lx = W / 2, lcy = ly;
+
+        /* Proportional line widths and lengths */
+        int lw_bezel = (r + 9) / 18;          /* outer ring */
+        int lw_hour  = (r + 6) / 12;          /* hour hand  */
+        int lw_min   = (r + 9) / 18;          /* minute hand */
+        int dot_rad  = (r + 4) / 9;           /* center dot radius */
+
+        /* Tick geometry — all derived from r */
+        int r_rim    = r - lw_bezel - 1;      /* inner edge of bezel */
+        int r_in_qtr = r_rim - r / 6;         /* quarter-hour inset  */
+        int r_in_hr  = r_rim - r / 9;         /* other hour inset    */
+        int r_in_min = r_rim - r / 18;        /* minute inset        */
+
+        /* Face fill */
         XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->surface));
-        XFillArc(app->dpy, buf, app->gc, lx-r, ly-r, 2*r, 2*r, 0, 360*64);
+        XFillArc(app->dpy, buf, app->gc, lx-r, lcy-r, 2*r, 2*r, 0, 360*64);
+
+        /* Outer bezel ring */
+        XSetLineAttributes(app->dpy, app->gc, lw_bezel, LineSolid, CapRound, JoinRound);
         XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->accent));
-        XDrawArc(app->dpy, buf, app->gc, lx-r,   ly-r,   2*r,   2*r,   0, 360*64);
-        XDrawArc(app->dpy, buf, app->gc, lx-r+1, ly-r+1, 2*r-2, 2*r-2, 0, 360*64);
-        XDrawLine(app->dpy, buf, app->gc, lx, ly-r+1, lx, ly-r+5);
-        { double a = (-60.0)*M_PI/180.0; int hl = r-7;
-          XDrawLine(app->dpy, buf, app->gc, lx, ly,
-                    lx+(int)(hl*sin(a)), ly-(int)(hl*cos(a))); }
-        { double a = (60.0)*M_PI/180.0; int ml = r-3;
-          XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->text));
-          XDrawLine(app->dpy, buf, app->gc, lx, ly,
-                    lx+(int)(ml*sin(a)), ly-(int)(ml*cos(a))); }
+        XDrawArc(app->dpy, buf, app->gc, lx-r, lcy-r, 2*r, 2*r, 0, 360*64);
+
+        /* Inner decorative ring just inside the bezel */
+        int ri = r - lw_bezel - 2;
+        XSetLineAttributes(app->dpy, app->gc, 1, LineSolid, CapRound, JoinRound);
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->border));
+        XDrawArc(app->dpy, buf, app->gc, lx-ri, lcy-ri, 2*ri, 2*ri, 0, 360*64);
+
+        /* 60 tick marks */
+        for (int i = 0; i < 60; i++) {
+            double a  = i * TAU / 60.0;
+            double sa = sin(a), ca = cos(a);
+            int is_qtr  = (i % 15 == 0);
+            int is_hour = (i %  5 == 0);
+            int r_in    = is_qtr  ? r_in_qtr :
+                          is_hour ? r_in_hr  : r_in_min;
+            int lw      = is_qtr  ? lw_bezel : (is_hour ? 2 : 1);
+            unsigned long col = is_hour ? th->text : th->text_muted;
+            XSetForeground(app->dpy, app->gc, rgb_pixel(app, col));
+            XSetLineAttributes(app->dpy, app->gc, lw, LineSolid, CapRound, JoinRound);
+            XDrawLine(app->dpy, buf, app->gc,
+                      lx + (int)(r_rim * sa), lcy - (int)(r_rim * ca),
+                      lx + (int)(r_in  * sa), lcy - (int)(r_in  * ca));
+        }
+
+        /* Hour hand — short, thick, round cap */
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->text));
+        XSetLineAttributes(app->dpy, app->gc, lw_hour, LineSolid, CapRound, JoinRound);
+        XDrawLine(app->dpy, buf, app->gc, lx, lcy,
+                  lx + (int)(r * 0.48 * sin(ang_h)),
+                  lcy - (int)(r * 0.48 * cos(ang_h)));
+
+        /* Minute hand — longer, slightly thinner */
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->text));
+        XSetLineAttributes(app->dpy, app->gc, lw_min, LineSolid, CapRound, JoinRound);
+        XDrawLine(app->dpy, buf, app->gc, lx, lcy,
+                  lx + (int)(r * 0.73 * sin(ang_m)),
+                  lcy - (int)(r * 0.73 * cos(ang_m)));
+
+        /* Second hand — thin, accent color, with counter-tail */
         XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->accent));
-        XFillArc(app->dpy, buf, app->gc, lx-3, ly-3, 6, 6, 0, 360*64);
+        XSetLineAttributes(app->dpy, app->gc, 1, LineSolid, CapRound, JoinRound);
+        {
+            double sl = r * 0.84, tail = r * 0.18;
+            XDrawLine(app->dpy, buf, app->gc,
+                      lx - (int)(tail * sin(ang_s)), lcy + (int)(tail * cos(ang_s)),
+                      lx + (int)(sl   * sin(ang_s)), lcy - (int)(sl   * cos(ang_s)));
+        }
+
+        /* Center: accent disc + surface cap */
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->accent));
+        XFillArc(app->dpy, buf, app->gc,
+                 lx - dot_rad, lcy - dot_rad, 2*dot_rad, 2*dot_rad, 0, 360*64);
+        int cap = dot_rad / 2;
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->surface));
+        XFillArc(app->dpy, buf, app->gc, lx-cap, lcy-cap, 2*cap, 2*cap, 0, 360*64);
+
+        XSetLineAttributes(app->dpy, app->gc, 0, LineSolid, CapButt, JoinMiter);
     }
 
     /* ── Quote ─────────────────────────────────────────── */
@@ -584,8 +660,8 @@ void create_config_window(App *app) {
 
     XStoreName(app->dpy, app->cfg_win, "Timer");
     XMapRaised(app->dpy, app->cfg_win);
-    XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
     XFlush(app->dpy);
+    /* Focus is requested in the MapNotify handler once the window is viewable. */
     app->cfg_xft = make_xft_draw(app, app->cfg_win);
     app->cursor_blink = 1;
     app->cursor_blink_ts = ms_now();
@@ -726,11 +802,14 @@ void draw_timer_mini(App *app) {
         if (bar_w > 0) fill_rect(app, buf, timer_display_color(app), 0, py, bar_w, prog_h);
     }
 
-    /* ── Accent border — drawn last ─────────────────────── */
-    fill_rect(app, buf, th->accent, 0, 0, W, border);
-    fill_rect(app, buf, th->accent, 0, H - border, W, border);
-    fill_rect(app, buf, th->accent, 0, 0, border, H);
-    fill_rect(app, buf, th->accent, W - border, 0, border, H);
+    /* ── Border — color matches the countdown text ──────── */
+    {
+        unsigned long bc = timer_display_color(app);
+        fill_rect(app, buf, bc, 0, 0, W, border);
+        fill_rect(app, buf, bc, 0, H - border, W, border);
+        fill_rect(app, buf, bc, 0, 0, border, H);
+        fill_rect(app, buf, bc, W - border, 0, border, H);
+    }
 
     XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
@@ -765,7 +844,7 @@ static void draw_timer_fullscreen(App *app) {
 
     /* ── Task name ─────────────────────────────────────── */
     if (app->task[0]) {
-        int tsz = fit_font_size(app, app->task, W-80, H/10, 10, 48, 0);
+        int tsz = fit_font_size(app, app->task, W - W/8, H/10, 10, 48, 0);
         XftFont *f = get_font(app, tsz, 0);
         if (f) {
             xft_draw_string_centered(app, draw, f, th->text, W/2, top+f->ascent, app->task);
@@ -793,36 +872,43 @@ static void draw_timer_fullscreen(App *app) {
     {
         char time_str[16];
         format_time(app->remaining_seconds, time_str, sizeof(time_str));
-        int pause_reserve = (app->state == STATE_PAUSED) ? 36 : 0;
-        int avail_h = bottom - top - pause_reserve - 4;
-        int avail_w = W - 40;
+
+        /* All geometry proportional to W and H */
+        int h_margin  = W / 16;          /* horizontal margin ~6 % of width */
+        int pause_rsv = (app->state == STATE_PAUSED) ? H / 18 : 0;
+        int pad       = 2;
+        int cd_x  = h_margin + pad;
+        int cd_y  = top + pad;
+        int cd_w  = W - h_margin * 2 - pad * 2;
+        int cd_h  = bottom - top - pause_rsv - pad * 2;
+
         int show = (app->state != STATE_PAUSED) ||
                    ((int)(monotonic_now() * 2) % 2 == 0);
 
-        if (avail_w > 0 && avail_h > 0) {
-            int m = 2;
-            int tx = 20+m, ty = top+m, td_w = avail_w-m*2, td_h = avail_h-m*2;
+        if (cd_w > 0 && cd_h > 0) {
             int fmt_len = (int)strlen(time_str);
             if (app->cd_font_sz == 0 ||
-                app->cd_font_avail_h != avail_h ||
+                app->cd_font_avail_h != cd_h ||
+                app->cd_font_avail_w != cd_w  ||
                 app->cd_font_fmt_len != fmt_len) {
-                app->cd_font_sz      = fit_font_size_h(app, td_h, 20, 600, 3);
-                app->cd_font_avail_w = avail_w;
-                app->cd_font_avail_h = avail_h;
+                app->cd_font_sz      = fit_font_size_h(app, cd_h, 20, 600, 3);
+                app->cd_font_avail_w = cd_w;
+                app->cd_font_avail_h = cd_h;
                 app->cd_font_fmt_len = fmt_len;
             }
             XftFont *f = get_font(app, app->cd_font_sz, 3);
             if (f && show)
-                draw_text_stretched(app, buf, tx, ty, td_w, td_h,
+                draw_text_stretched(app, buf, cd_x, cd_y, cd_w, cd_h,
                                     f, timer_display_color(app), th->bg, time_str);
         }
     }
 
-    /* ── Paused label (scales with H) ──────────────────── */
+    /* ── Paused label — proportional to H ──────────────── */
     if (app->state == STATE_PAUSED) {
-        int psz = scaled(H/30, 14, 28);
+        int psz = scaled(H / 30, 14, 28);
         XftFont *f = get_font(app, psz, 0);
-        if (f) xft_draw_string_centered(app, draw, f, th->danger, W/2, bottom-6, "PAUSED");
+        if (f) xft_draw_string_centered(app, draw, f, th->danger,
+                                         W / 2, bottom - H / 40, "PAUSED");
     }
 
     /* ── Progress bar ──────────────────────────────────── */
