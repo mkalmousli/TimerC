@@ -65,9 +65,9 @@
 #define MAX_INPUT      APP_MAX_INPUT
 #define TICK_MS       50
 #define N_THEMES      5
-#define N_QUOTES      16
 #define SAMPLE_RATE   44100
 #define TAU           (2.0 * M_PI)
+#define MAX_MONITORS  8
 
 /* Config window dimensions */
 #define CFG_W  440
@@ -165,12 +165,23 @@ static const Theme THEMES[N_THEMES] = {
       0x8a78a1, 0x803743 },
 };
 
-static const char *QUOTES[N_QUOTES] = {
+
+static const char *QUOTES[] = {
     "Stay here.", "One thing.", "Breathe slow.", "Begin now.",
     "Keep going.", "Small steps.", "Easy focus.", "Just this.",
     "Quiet mind.", "Soft effort.", "Time flows.", "Hold steady.",
     "No rush.", "Be present.", "Gentle focus.", "Finish calmly.",
 };
+#define N_QUOTES ((int)(sizeof(QUOTES)/sizeof(QUOTES[0])))
+
+/* Per-monitor alert overlay */
+typedef struct {
+    Window    win;
+    XftDraw  *xft;
+    Pixmap    buf;
+    XftDraw  *buf_xft;
+    int       x, y, w, h;
+} AlertScreen;
 
 /* ─────────────────────────────────────────────────────── */
 /* App State Struct                                        */
@@ -199,10 +210,30 @@ typedef struct {
     /* Windows */
     Window     cfg_win;
     XftDraw   *cfg_xft;
+    int        cfg_x, cfg_y;         /* tracked position (override_redirect) */
     Window     tmr_win;
     XftDraw   *tmr_xft;
-    Window     alert_win;
-    XftDraw   *alert_xft;
+
+    /* Alert overlay — one window per monitor */
+    AlertScreen alert_screens[MAX_MONITORS];
+    int         n_alert_screens;
+
+    /* Double-buffering pixmaps (eliminate flicker) */
+    Pixmap     cfg_buf;
+    XftDraw   *cfg_buf_xft;
+    Pixmap     tmr_buf;
+    XftDraw   *tmr_buf_xft;
+    int        tmr_buf_w, tmr_buf_h;
+
+    /* Saved mini-mode geometry (restored when leaving fullscreen) */
+    int        saved_mini_x, saved_mini_y;
+    int        saved_mini_w, saved_mini_h;
+    int        has_saved_mini;
+
+    /* Countdown font-size cache */
+    int        cd_font_sz;
+    int        cd_font_avail_w, cd_font_avail_h;
+    int        cd_font_fmt_len; /* length of formatted string */
 
     /* Font cache */
     FontEntry  fonts[MAX_FONT_CACHE];
@@ -243,10 +274,15 @@ typedef struct {
     /* Mini window geometry */
     int        tmr_x, tmr_y, tmr_w, tmr_h;
 
-    /* Dragging */
-    int        drag_px, drag_py;   /* pointer position at drag start */
-    int        drag_wx, drag_wy;   /* window position at drag start */
+    /* Mini-window drag */
+    int        drag_px, drag_py;
+    int        drag_wx, drag_wy;
     int        is_dragging;
+
+    /* Config-window drag */
+    int        cfg_is_dragging;
+    int        cfg_drag_px, cfg_drag_py;
+    int        cfg_drag_wx, cfg_drag_wy;
 
     /* Corner resize */
     int        is_resizing;
@@ -375,16 +411,17 @@ static unsigned long lerp_rgb(unsigned long a, unsigned long b, double t) {
     return ((unsigned long)r << 16) | ((unsigned long)g << 8) | (unsigned long)b2;
 }
 
-static void fill_rect(App *app, Window win, unsigned long rgb,
+/* All drawing targets Drawable so functions work on both Windows and Pixmaps */
+static void fill_rect(App *app, Drawable d, unsigned long rgb,
                       int x, int y, int w, int h) {
     XSetForeground(app->dpy, app->gc, rgb_pixel(app, rgb));
-    XFillRectangle(app->dpy, win, app->gc, x, y, w, h);
+    XFillRectangle(app->dpy, d, app->gc, x, y, w, h);
 }
 
-static void draw_rect_outline(App *app, Window win, unsigned long rgb,
+static void draw_rect_outline(App *app, Drawable d, unsigned long rgb,
                                int x, int y, int w, int h) {
     XSetForeground(app->dpy, app->gc, rgb_pixel(app, rgb));
-    XDrawRectangle(app->dpy, win, app->gc, x, y, w - 1, h - 1);
+    XDrawRectangle(app->dpy, d, app->gc, x, y, w - 1, h - 1);
 }
 
 /* ─────────────────────────────────────────────────────── */
@@ -1094,15 +1131,6 @@ static void db_finish_session(App *app, const char *status) {
 /* EWMH / WM hints                                         */
 /* ─────────────────────────────────────────────────────── */
 
-static void set_wm_delete(App *app, Window win) {
-    XSetWMProtocols(app->dpy, win, &app->wm_delete, 1);
-}
-
-static void set_always_on_top(App *app, Window win) {
-    XChangeProperty(app->dpy, win,
-                    app->net_wm_state, XA_ATOM, 32, PropModeReplace,
-                    (unsigned char *)&app->net_wm_state_above, 1);
-}
 
 /* ─────────────────────────────────────────────────────── */
 /* Timer color calculation                                 */
@@ -1162,11 +1190,42 @@ static unsigned long alert_strobe_color(double elapsed, int frame) {
 }
 
 /* ─────────────────────────────────────────────────────── */
-/* XftDraw creation helper                                 */
+/* XftDraw creation + double-buffer helpers                */
 /* ─────────────────────────────────────────────────────── */
 
-static XftDraw *make_xft_draw(App *app, Window win) {
-    return XftDrawCreate(app->dpy, win, app->vis, app->cmap);
+static XftDraw *make_xft_draw(App *app, Drawable d) {
+    return XftDrawCreate(app->dpy, d, app->vis, app->cmap);
+}
+
+static void ensure_cfg_buf(App *app) {
+    if (app->cfg_buf) return;
+    if (!app->cfg_win) return;
+    app->cfg_buf = XCreatePixmap(app->dpy, app->cfg_win,
+                                 CFG_W, CFG_H, app->depth);
+    app->cfg_buf_xft = make_xft_draw(app, app->cfg_buf);
+}
+
+static void ensure_tmr_buf(App *app) {
+    if (app->tmr_buf &&
+        app->tmr_buf_w == app->tmr_w &&
+        app->tmr_buf_h == app->tmr_h) return;
+    if (app->tmr_buf_xft) { XftDrawDestroy(app->tmr_buf_xft); app->tmr_buf_xft = NULL; }
+    if (app->tmr_buf)     { XFreePixmap(app->dpy, app->tmr_buf); app->tmr_buf = 0; }
+    if (!app->tmr_win || app->tmr_w <= 0 || app->tmr_h <= 0) return;
+    app->tmr_buf = XCreatePixmap(app->dpy, app->tmr_win,
+                                 app->tmr_w, app->tmr_h, app->depth);
+    app->tmr_buf_xft = make_xft_draw(app, app->tmr_buf);
+    app->tmr_buf_w = app->tmr_w;
+    app->tmr_buf_h = app->tmr_h;
+    /* Invalidate font cache on size change */
+    app->cd_font_sz = 0;
+}
+
+static void ensure_alert_screen_buf(App *app, AlertScreen *s) {
+    if (s->buf) return;
+    if (!s->win) return;
+    s->buf = XCreatePixmap(app->dpy, s->win, s->w, s->h, app->depth);
+    s->buf_xft = make_xft_draw(app, s->buf);
 }
 
 /* ─────────────────────────────────────────────────────── */
@@ -1175,59 +1234,79 @@ static XftDraw *make_xft_draw(App *app, Window win) {
 
 static void draw_config(App *app) {
     if (!app->cfg_win) return;
+    ensure_cfg_buf(app);
     const Theme *th = cur_theme(app);
     int W = CFG_W, H = CFG_H;
 
-    /* Background */
-    fill_rect(app, app->cfg_win, th->bg, 0, 0, W, H);
-
-    XftDraw *draw = app->cfg_xft;
+    Drawable  buf  = app->cfg_buf ? (Drawable)app->cfg_buf : (Drawable)app->cfg_win;
+    XftDraw  *draw = app->cfg_buf ? app->cfg_buf_xft : app->cfg_xft;
     if (!draw) return;
 
-    /* ── Theme badge (top-right) ─────────────────────── */
+    /* ── Background ──────────────────────────────────── */
+    fill_rect(app, buf, th->bg, 0, 0, W, H);
+
+    /* ── Logo: drawn analog clock + "TIMER" label ─────── */
     {
-        XftFont *f = get_font(app, 8, 0);
-        if (f) {
-            char badge[64];
-            snprintf(badge, sizeof(badge), "theme: %s", th->name);
-            int bw = text_width(app, f, badge);
-            xft_draw_string(app, draw, f, th->text_muted, W - bw - 12, 14, badge);
+        XftFont *tf  = get_font(app, 22, 1);
+        int      tw  = tf ? text_width(app, tf, "TIMER") : 80;
+        int      gap = 10;
+        int      r   = 17;
+        int      total_logo_w = 2*r + gap + tw;
+        int      lx  = (W - total_logo_w) / 2 + r;
+        int      ly  = 34;
+
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->surface));
+        XFillArc(app->dpy, buf, app->gc, lx-r, ly-r, 2*r, 2*r, 0, 360*64);
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->accent));
+        XDrawArc(app->dpy, buf, app->gc, lx-r, ly-r, 2*r, 2*r, 0, 360*64);
+        XDrawLine(app->dpy, buf, app->gc, lx, ly-r+1, lx, ly-r+4);
+        /* Hour hand at 10 o'clock */
+        { double a = (-60.0)*M_PI/180.0; int hl = r-6;
+          XDrawLine(app->dpy, buf, app->gc, lx, ly,
+                    lx+(int)(hl*sin(a)), ly-(int)(hl*cos(a))); }
+        /* Minute hand at 2 o'clock */
+        { double a = (60.0)*M_PI/180.0; int ml = r-3;
+          XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->text));
+          XDrawLine(app->dpy, buf, app->gc, lx, ly,
+                    lx+(int)(ml*sin(a)), ly-(int)(ml*cos(a))); }
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->accent));
+        XFillArc(app->dpy, buf, app->gc, lx-2, ly-2, 4, 4, 0, 360*64);
+
+        if (tf) {
+            int tx = lx + r + gap;
+            int ty = ly + (tf->ascent - tf->descent) / 2;
+            xft_draw_string(app, draw, tf, th->text, tx, ty, "TIMER");
         }
     }
 
-    /* ── Quote ───────────────────────────────────────── */
+    /* ── Quote under logo ────────────────────────────── */
     {
-        XftFont *f = get_font(app, 20, 1);
-        if (f) {
-            static const char *quote = NULL;
-            if (!quote) quote = QUOTES[rand() % N_QUOTES];
-            xft_draw_string_centered(app, draw, f, th->accent, W / 2, 58, quote);
-        }
+        static int q_idx = -1;
+        if (q_idx < 0) q_idx = rand() % N_QUOTES;
+        XftFont *qf = get_font(app, 11, 0);
+        if (qf) xft_draw_string_centered(app, draw, qf, th->text_muted,
+                                          W/2, 60, QUOTES[q_idx]);
     }
 
     /* ── Input field ─────────────────────────────────── */
     {
-        int fx = 22, fy = 72, fw = W - 44, fh = 46;
-        /* Background */
-        fill_rect(app, app->cfg_win, th->surface_soft, fx, fy, fw, fh);
-        /* Border */
-        draw_rect_outline(app, app->cfg_win, th->accent, fx, fy, fw, fh);
+        int fx = 22, fy = 66, fw = W - 44, fh = 48;
+        fill_rect(app, buf, th->surface_soft, fx, fy, fw, fh);
+        draw_rect_outline(app, buf, th->accent, fx, fy, fw, fh);
 
         XftFont *f = get_font(app, 17, 0);
         if (f) {
-            int ty = fy + (fh + f->ascent) / 2;
-            int text_x = fx + 12;
+            int ty      = fy + (fh + f->ascent - f->descent) / 2;
+            int text_x  = fx + 12;
             int avail_w = fw - 24;
 
-            /* Render input text — scroll to keep cursor visible */
             const char *text = app->input;
             int tlen = app->input_len;
 
-            /* Find display start so cursor is always visible */
+            /* Scroll so cursor stays visible */
             int start = 0;
             if (app->cursor_pos > 0) {
                 char tmp[MAX_INPUT];
-                /* Walk back from cursor until text fits */
                 for (start = 0; start <= app->cursor_pos; start++) {
                     strncpy(tmp, text + start, app->cursor_pos - start);
                     tmp[app->cursor_pos - start] = '\0';
@@ -1240,9 +1319,9 @@ static void draw_config(App *app) {
             disp[tlen - start] = '\0';
             xft_draw_string(app, draw, f, th->text, text_x, ty, disp);
 
-            /* Cursor */
+            /* Cursor bar */
             int blink_on = app->cursor_blink ||
-                           (app->state == STATE_CONFIG && /* always show on fresh draw */
+                           (app->state == STATE_CONFIG &&
                             ms_now() - app->cursor_blink_ts < 100);
             if (blink_on) {
                 char before[MAX_INPUT];
@@ -1250,87 +1329,100 @@ static void draw_config(App *app) {
                 if (cp_disp < 0) cp_disp = 0;
                 strncpy(before, text + start, cp_disp);
                 before[cp_disp] = '\0';
-                int cx = text_x + text_width(app, f, before);
+                int cx2 = text_x + text_width(app, f, before);
                 XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->text));
-                XFillRectangle(app->dpy, app->cfg_win, app->gc,
-                               cx, fy + 6, 2, fh - 12);
+                XFillRectangle(app->dpy, buf, app->gc, cx2, fy + 7, 2, fh - 14);
             }
 
-            /* Placeholder */
-            if (tlen == 0) {
-                XftFont *pf = get_font(app, 13, 0);
-                if (pf)
-                    xft_draw_string(app, draw, pf, th->text_muted,
-                                    text_x, ty, "25m focus  ·  1h coding  ·  u16:30");
-            }
+            (void)tlen; /* placeholder intentionally removed */
         }
     }
 
-    /* ── Switch chips ────────────────────────────────── */
+    /* ── Switch chips (d/a/f/p) ─────────────────────── */
     {
         int sw_d=0, sw_a=0, sw_f=0, sw_p=0;
         char until_preview[MAX_UNTIL] = "";
         get_preview_switches(app->input, &sw_d, &sw_a, &sw_f, &sw_p, until_preview);
 
-        struct { int active; const char *label; unsigned long bg; unsigned long fg; unsigned long border; }
-        chips[] = {
-            { sw_d, "d shutdown", th->danger,       0xf0e8d8UL, th->danger },
-            { sw_a, "a alert",    th->accent_soft,  th->accent,  th->border },
-            { sw_f, "f fullscreen",th->accent_soft, th->accent,  th->border },
-            { sw_p, "p pausable", th->accent_soft,  th->accent,  th->border },
-            { until_preview[0] != '\0', NULL, th->until_chip_bg, th->until_chip_fg, th->until_chip_border },
+        struct {
+            int active; const char *label;
+            unsigned long bg, fg, border;
+        } chips[] = {
+            { sw_d, "d  shutdown",   th->danger,       0xf0e8d8UL,  th->danger  },
+            { sw_a, "a  alert",      th->accent_soft,  th->accent,  th->border  },
+            { sw_f, "f  fullscreen", th->accent_soft,  th->accent,  th->border  },
+            { sw_p, "p  pausable",   th->accent_soft,  th->accent,  th->border  },
         };
-        int n_active = 0;
-        int chip_widths[5] = {0};
+
         XftFont *cf = get_font(app, 9, 1);
         if (cf) {
-            for (int i = 0; i < 5; i++) {
+            int n_active = 0;
+            int chip_widths[4] = {0};
+            for (int i = 0; i < 4; i++) {
                 if (!chips[i].active) continue;
-                const char *lbl = (i == 4) ? until_preview : chips[i].label;
-                char tmp[32];
-                if (i == 4) snprintf(tmp, sizeof(tmp), "until %s", until_preview);
-                else snprintf(tmp, sizeof(tmp), "%s", lbl);
-                chip_widths[i] = text_width(app, cf, tmp) + 20;
+                chip_widths[i] = text_width(app, cf, chips[i].label) + 22;
                 n_active++;
             }
             if (n_active > 0) {
-                int total_w = 0;
-                for (int i = 0; i < 5; i++)
+                int total_w = -6;
+                for (int i = 0; i < 4; i++)
                     if (chips[i].active) total_w += chip_widths[i] + 6;
-                total_w -= 6;
-                int cx = (W - total_w) / 2;
-                int cy = 132;
-                for (int i = 0; i < 5; i++) {
+                int cx2 = (W - total_w) / 2;
+                int cy  = 130, ch = 22;
+                for (int i = 0; i < 4; i++) {
                     if (!chips[i].active) continue;
-                    const char *lbl;
-                    char tmp[32];
-                    if (i == 4) { snprintf(tmp, sizeof(tmp), "until %s", until_preview); lbl = tmp; }
-                    else lbl = chips[i].label;
                     int cw = chip_widths[i];
-                    int ch2 = 20;
-                    fill_rect(app, app->cfg_win, chips[i].bg, cx, cy, cw, ch2);
-                    draw_rect_outline(app, app->cfg_win, chips[i].border, cx, cy, cw, ch2);
-                    int tw2 = text_width(app, cf, lbl);
+                    fill_rect(app, buf, chips[i].bg, cx2, cy, cw, ch);
+                    draw_rect_outline(app, buf, chips[i].border, cx2, cy, cw, ch);
+                    int tw2 = text_width(app, cf, chips[i].label);
                     xft_draw_string(app, draw, cf, chips[i].fg,
-                                    cx + (cw - tw2)/2, cy + cf->ascent + 2, lbl);
-                    cx += cw + 6;
+                                    cx2 + (cw-tw2)/2, cy + cf->ascent + 2, chips[i].label);
+                    cx2 += cw + 6;
                 }
+            }
+        }
+
+        /* ── Until chip — separate row, includes seconds ── */
+        if (until_preview[0]) {
+            ParseResult pr;
+            parse_time_input(app->input, &pr);
+            char ulbl[64] = "";
+            if (pr.seconds > 0) {
+                int h = pr.seconds / 3600;
+                int m = (pr.seconds % 3600) / 60;
+                int s = pr.seconds % 60;
+                if (h > 0)
+                    snprintf(ulbl, sizeof(ulbl), "until %s   in %d:%02d:%02d",
+                             until_preview, h, m, s);
+                else
+                    snprintf(ulbl, sizeof(ulbl), "until %s   in %d:%02d",
+                             until_preview, m, s);
+            } else {
+                snprintf(ulbl, sizeof(ulbl), "until %s", until_preview);
+            }
+            XftFont *uf = get_font(app, 9, 1);
+            if (uf) {
+                int uw = text_width(app, uf, ulbl) + 28;
+                int uh = 24;
+                int ux = (W - uw) / 2, uy = 160;
+                fill_rect(app, buf, th->until_chip_bg, ux, uy, uw, uh);
+                draw_rect_outline(app, buf, th->until_chip_border, ux, uy, uw, uh);
+                int utw = text_width(app, uf, ulbl);
+                xft_draw_string(app, draw, uf, th->until_chip_fg,
+                                ux + (uw-utw)/2, uy + uf->ascent + 3, ulbl);
             }
         }
     }
 
-    /* ── Mode / hint line ────────────────────────────── */
-    {
-        XftFont *f = get_font(app, 9, 0);
-        if (f) {
-            const char *hint = "Enter: start   ESC: quit   Ctrl+T: cycle theme   Right-click: fullscreen";
-            xft_draw_string_centered(app, draw, f, th->text_muted, W/2, H - 14, hint);
-        }
-    }
+    /* ── Border around config window ────────────────── */
+    fill_rect(app, buf, th->accent, 0, 0, W, 2);
+    fill_rect(app, buf, th->accent, 0, H-2, W, 2);
+    fill_rect(app, buf, th->accent, 0, 0, 2, H);
+    fill_rect(app, buf, th->accent, W-2, 0, 2, H);
 
-    /* ── Top accent bar ──────────────────────────────── */
-    fill_rect(app, app->cfg_win, th->accent, 0, 0, W, 3);
-
+    /* Blit to window */
+    if (app->cfg_buf)
+        XCopyArea(app->dpy, app->cfg_buf, app->cfg_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
 }
 
@@ -1353,36 +1445,28 @@ static void create_config_window(App *app) {
     int x = app->mon_x + (app->mon_w - CFG_W) / 2;
     int y = app->mon_y + (app->mon_h - CFG_H) / 2;
 
+    app->cfg_x = x;
+    app->cfg_y = y;
+
     XSetWindowAttributes swa;
+    swa.override_redirect = True;
     swa.background_pixel  = rgb_pixel(app, th->bg);
-    swa.border_pixel      = rgb_pixel(app, th->accent);
+    swa.border_pixel      = 0;
     swa.colormap          = app->cmap;
-    swa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask
-                          | StructureNotifyMask;
+    swa.event_mask        = ExposureMask | KeyPressMask
+                          | ButtonPressMask | ButtonReleaseMask
+                          | PointerMotionMask | StructureNotifyMask;
 
     app->cfg_win = XCreateWindow(
         app->dpy, root,
         x, y, CFG_W, CFG_H, 0,
         app->depth, InputOutput, app->vis,
-        CWBackPixel | CWBorderPixel | CWColormap | CWEventMask, &swa);
+        CWOverrideRedirect | CWBackPixel | CWBorderPixel
+        | CWColormap | CWEventMask, &swa);
 
-    /* Window title */
     XStoreName(app->dpy, app->cfg_win, "Timer");
-
-    /* WM delete */
-    set_wm_delete(app, app->cfg_win);
-
-    /* Stay on top */
-    set_always_on_top(app, app->cfg_win);
-
-    /* Size hints (fixed) */
-    XSizeHints hints;
-    hints.flags = PMinSize | PMaxSize;
-    hints.min_width = hints.max_width = CFG_W;
-    hints.min_height= hints.max_height= CFG_H;
-    XSetWMNormalHints(app->dpy, app->cfg_win, &hints);
-
-    XMapWindow(app->dpy, app->cfg_win);
+    XMapRaised(app->dpy, app->cfg_win);
+    XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
     XFlush(app->dpy);
 
     app->cfg_xft = make_xft_draw(app, app->cfg_win);
@@ -1397,20 +1481,27 @@ static void create_config_window(App *app) {
 
 static void draw_timer_mini(App *app) {
     if (!app->tmr_win) return;
+    ensure_tmr_buf(app);
+    if (!app->tmr_buf) return;
+
     const Theme *th = cur_theme(app);
     int W = app->tmr_w, H = app->tmr_h;
-    XftDraw *draw = app->tmr_xft;
+    Drawable  buf  = app->tmr_buf;
+    XftDraw  *draw = app->tmr_buf_xft;
     if (!draw) return;
 
-    /* Background */
-    fill_rect(app, app->tmr_win, th->bg, 0, 0, W, H);
+    /* ── Background + 2-px accent border ────────────── */
+    fill_rect(app, buf, th->bg, 0, 0, W, H);
+    /* Draw 2px border by filling four edge strips */
+    fill_rect(app, buf, th->accent, 0, 0, W, 2);
+    fill_rect(app, buf, th->accent, 0, H-2, W, 2);
+    fill_rect(app, buf, th->accent, 0, 0, 2, H);
+    fill_rect(app, buf, th->accent, W-2, 0, 2, H);
 
-    /* 1px accent border */
-    draw_rect_outline(app, app->tmr_win, th->accent, 0, 0, W, H);
-
+    int prog_h = (H >= 76) ? PROG_H_MINI : 0;
     int y = 4;
 
-    /* Shutdown icon */
+    /* ── Shutdown icon ───────────────────────────────── */
     if (app->mode == MODE_SHUTDOWN) {
         XftFont *f = get_font(app, 11, 0);
         if (f) {
@@ -1420,212 +1511,222 @@ static void draw_timer_mini(App *app) {
         }
     }
 
-    /* Task name */
+    /* ── Task name ───────────────────────────────────── */
     {
         XftFont *f = get_font(app, 8, 0);
-        if (f && W > 80) {
+        if (f && W > 80 && H > 60) {
             char task[MAX_TASK];
-            snprintf(task, sizeof(task), "%s", app->task);
-            if ((int)strlen(task) > 22) { task[20] = '.'; task[21] = '.'; task[22] = '\0'; }
+            strncpy(task, app->task, sizeof(task) - 1);
+            task[sizeof(task)-1] = '\0';
+            /* Truncate to fit */
+            while ((int)strlen(task) > 1 && text_width(app, f, task) > W - 10) {
+                int len = (int)strlen(task);
+                task[len-1] = '\0';
+                if (len > 4) { task[len-2] = '.'; task[len-3] = '.'; task[len-4] = '.'; }
+            }
             xft_draw_string_centered(app, draw, f, th->text, W/2, y + f->ascent, task);
             y += f->ascent + f->descent + 2;
         }
     }
 
-    /* Until time */
-    int has_until = app->until_str[0] != '\0';
-    if (has_until) {
+    /* ── Until time ──────────────────────────────────── */
+    if (app->until_str[0]) {
         XftFont *f = get_font(app, 17, 1);
         if (f) {
             int bw = text_width(app, f, app->until_str) + 24;
             int bh = f->ascent + f->descent + 8;
             int bx = (W - bw) / 2;
-            fill_rect(app, app->tmr_win, th->until_clock_bg, bx, y, bw, bh);
-            draw_rect_outline(app, app->tmr_win, th->until_chip_border, bx, y, bw, bh);
+            fill_rect(app, buf, th->until_clock_bg, bx, y, bw, bh);
+            draw_rect_outline(app, buf, th->until_chip_border, bx, y, bw, bh);
             xft_draw_string_centered(app, draw, f, th->until_clock_fg,
                                      W/2, y + f->ascent + 4, app->until_str);
             y += bh + 4;
         }
     }
 
-    /* Countdown */
+    /* ── Countdown ───────────────────────────────────── */
     {
-        int prog_h = (H >= 90) ? PROG_H_MINI : 0;
-        int avail_h = H - y - prog_h - 8;
-        int avail_w = W - 8;
+        int avail_h = H - y - prog_h - 2;
+        int avail_w = W - 4;
 
         char time_str[16];
         format_time(app->remaining_seconds, time_str, sizeof(time_str));
 
-        /* Blink when paused */
-        int show = 1;
-        if (app->state == STATE_PAUSED) {
-            show = (int)(monotonic_now() * 2) % 2 == 0;
-        }
+        int show = (app->state != STATE_PAUSED) ||
+                   ((int)(monotonic_now() * 2) % 2 == 0);
 
-        if (avail_w > 20 && avail_h > 10) {
-            int sz = fit_font_size(app, time_str, avail_w, avail_h, 10, 96, 1);
-            XftFont *f = get_font(app, sz, 1);
+        if (avail_w > 10 && avail_h > 8) {
+            /* Cached font size — only recompute when dimensions or string format changes */
+            int fmt_len = (int)strlen(time_str);
+            if (app->cd_font_sz == 0 ||
+                app->cd_font_avail_w != avail_w ||
+                app->cd_font_avail_h != avail_h ||
+                app->cd_font_fmt_len != fmt_len) {
+                app->cd_font_sz      = fit_font_size(app, time_str, avail_w, avail_h, 10, 96, 1);
+                app->cd_font_avail_w = avail_w;
+                app->cd_font_avail_h = avail_h;
+                app->cd_font_fmt_len = fmt_len;
+            }
+            XftFont *f = get_font(app, app->cd_font_sz, 1);
             if (f && show) {
                 unsigned long col = timer_display_color(app);
-                int tw3 = text_width(app, f, time_str);
-                int tx = (W - tw3) / 2;
-                int center_y = y + avail_h / 2;
-                int ty = center_y - (f->ascent + f->descent) / 2 + f->ascent;
-                xft_draw_string(app, draw, f, col, tx, ty, time_str);
+                int tw = text_width(app, f, time_str);
+                int tx = (W - tw) / 2;
+                int cy2 = y + (avail_h - (f->ascent + f->descent)) / 2 + f->ascent;
+                xft_draw_string(app, draw, f, col, tx, cy2, time_str);
             }
-        }
-
-        /* Pause label */
-        if (app->state == STATE_PAUSED && H > 80) {
-            XftFont *f = get_font(app, 7, 0);
-            if (f) {
-                xft_draw_string_centered(app, draw, f, th->danger,
-                                         W/2, H - prog_h - 14, "PAUSED");
-            }
-        }
-
-        /* Progress bar */
-        if (prog_h > 0 && app->total_seconds > 0) {
-            int px = 8, py = H - prog_h - 6, pw = W - 16;
-            double frac = 1.0 - (double)app->remaining_exact / app->total_seconds;
-            if (frac < 0) frac = 0;
-            if (frac > 1) frac = 1;
-            int bar_w = (int)(pw * frac);
-            fill_rect(app, app->tmr_win, th->surface, px, py, pw, prog_h);
-            if (bar_w > 0) {
-                unsigned long bcol = timer_display_color(app);
-                fill_rect(app, app->tmr_win, bcol, px, py, bar_w, prog_h);
+            /* Paused label below countdown */
+            if (app->state == STATE_PAUSED) {
+                XftFont *pf = get_font(app, 7, 0);
+                if (pf) xft_draw_string_centered(app, draw, pf, th->danger,
+                                                  W/2, H - prog_h - 4, "PAUSED");
             }
         }
     }
 
-    /* Resize corner ◢ */
+    /* ── Progress bar — full width with track border ── */
+    if (prog_h > 0 && app->total_seconds > 0) {
+        int py = H - prog_h;
+        double frac = 1.0 - app->remaining_exact / app->total_seconds;
+        if (frac < 0.0) frac = 0.0;
+        if (frac > 1.0) frac = 1.0;
+        int bar_w = (int)(W * frac);
+        /* Track background */
+        fill_rect(app, buf, th->surface_soft, 0, py, W, prog_h);
+        /* Fill */
+        if (bar_w > 0)
+            fill_rect(app, buf, timer_display_color(app), 0, py, bar_w, prog_h);
+        /* Top border line on track */
+        fill_rect(app, buf, th->border, 0, py, W, 1);
+    }
+
+    /* ── Resize corner ───────────────────────────────── */
     {
-        XftFont *f = get_font(app, 11, 0);
+        XftFont *f = get_font(app, 10, 0);
         if (f) {
-            int tw4 = text_width(app, f, "◢");
-            xft_draw_string(app, draw, f, th->accent,
-                            W - tw4 - 3, H - f->descent - 2, "◢");
+            int tw = text_width(app, f, "◢");
+            xft_draw_string(app, draw, f, th->border,
+                            W - tw - 2, H - f->descent - prog_h - 2, "◢");
         }
     }
 
+    /* Blit to window */
+    XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
 }
 
 static void draw_timer_fullscreen(App *app) {
     if (!app->tmr_win) return;
+    ensure_tmr_buf(app);
+    if (!app->tmr_buf) return;
+
     const Theme *th = cur_theme(app);
     int W = app->tmr_w, H = app->tmr_h;
-    XftDraw *draw = app->tmr_xft;
+    Drawable  buf  = app->tmr_buf;
+    XftDraw  *draw = app->tmr_buf_xft;
     if (!draw) return;
 
-    fill_rect(app, app->tmr_win, th->bg, 0, 0, W, H);
+    /* ── Background ──────────────────────────────────── */
+    fill_rect(app, buf, th->bg, 0, 0, W, H);
 
-    int prog_h = PROG_H_FULL;
-    int content_top = H / 8;
-    int content_bot = H - prog_h - 30;
+    int prog_h   = H / 10;           /* 10% of height */
+    int top      = H / 12;           /* start of content area */
+    int bottom   = H - prog_h;       /* bottom of content area */
 
-    /* Shutdown icon */
+    /* ── Shutdown icon ───────────────────────────────── */
     if (app->mode == MODE_SHUTDOWN) {
-        XftFont *f = get_font(app, W / 25, 0);
+        XftFont *f = get_font(app, W / 22, 0);
         if (f) {
             unsigned long ic = app->blink_on ? th->danger : th->border;
-            int tw5 = text_width(app, f, "⏻");
-            xft_draw_string(app, draw, f, ic,
-                            (W - tw5) / 2, content_top + f->ascent, "⏻");
-            content_top += f->ascent + f->descent + 8;
+            int tw = text_width(app, f, "⏻");
+            xft_draw_string(app, draw, f, ic, (W - tw)/2, top + f->ascent, "⏻");
+            top += f->ascent + f->descent + 6;
         }
     }
 
-    /* Task name */
-    {
-        int tsz = fit_font_size(app, app->task, W - 80, H / 12, 10, 42, 0);
+    /* ── Task name ───────────────────────────────────── */
+    if (app->task[0]) {
+        int tsz = fit_font_size(app, app->task, W - 80, H / 10, 10, 48, 0);
         XftFont *f = get_font(app, tsz, 0);
-        if (f && app->task[0]) {
+        if (f) {
             xft_draw_string_centered(app, draw, f, th->text,
-                                     W/2, content_top + f->ascent, app->task);
-            content_top += f->ascent + f->descent + 12;
+                                     W/2, top + f->ascent, app->task);
+            top += f->ascent + f->descent + 8;
         }
     }
 
-    /* Until time */
+    /* ── Until time ──────────────────────────────────── */
     if (app->until_str[0]) {
-        int usz = W / 18;
-        if (usz < 16) usz = 16;
+        int usz = W / 16; if (usz < 18) usz = 18;
         XftFont *f = get_font(app, usz, 1);
         if (f) {
             int bw = text_width(app, f, app->until_str) + 40;
             int bh = f->ascent + f->descent + 16;
             int bx = (W - bw) / 2;
-            fill_rect(app, app->tmr_win, th->until_clock_bg, bx, content_top, bw, bh);
-            draw_rect_outline(app, app->tmr_win, th->until_chip_border, bx, content_top, bw, bh);
+            fill_rect(app, buf, th->until_clock_bg, bx, top, bw, bh);
+            draw_rect_outline(app, buf, th->until_chip_border, bx, top, bw, bh);
             xft_draw_string_centered(app, draw, f, th->until_clock_fg,
-                                     W/2, content_top + f->ascent + 8, app->until_str);
-            content_top += bh + 16;
+                                     W/2, top + f->ascent + 8, app->until_str);
+            top += bh + 12;
         }
     }
 
-    /* Countdown — fits remaining space */
+    /* ── Countdown — maximally fills remaining space ─── */
     {
         char time_str[16];
         format_time(app->remaining_seconds, time_str, sizeof(time_str));
 
-        int avail_h = content_bot - content_top - 20;
-        int avail_w = W - 120;
+        /* Leave room for PAUSED label if needed */
+        int pause_reserve = (app->state == STATE_PAUSED) ? 36 : 0;
+        int avail_h = bottom - top - pause_reserve - 8;
+        int avail_w = W - 60;
 
-        int show = 1;
-        if (app->state == STATE_PAUSED) {
-            show = (int)(monotonic_now() * 2) % 2 == 0;
-        }
+        int show = (app->state != STATE_PAUSED) ||
+                   ((int)(monotonic_now() * 2) % 2 == 0);
 
         if (avail_w > 0 && avail_h > 0) {
-            int sz = fit_font_size(app, time_str, avail_w, avail_h, 20, 280, 1);
-            XftFont *f = get_font(app, sz, 1);
+            int fmt_len = (int)strlen(time_str);
+            if (app->cd_font_sz == 0 ||
+                app->cd_font_avail_w != avail_w ||
+                app->cd_font_avail_h != avail_h ||
+                app->cd_font_fmt_len != fmt_len) {
+                app->cd_font_sz      = fit_font_size(app, time_str, avail_w, avail_h, 20, 360, 1);
+                app->cd_font_avail_w = avail_w;
+                app->cd_font_avail_h = avail_h;
+                app->cd_font_fmt_len = fmt_len;
+            }
+            XftFont *f = get_font(app, app->cd_font_sz, 1);
             if (f && show) {
                 unsigned long col = timer_display_color(app);
-                int tw6 = text_width(app, f, time_str);
-                int cx2 = (W - tw6) / 2;
-                int cy2 = content_top + (avail_h - f->ascent - f->descent) / 2 + f->ascent;
-                xft_draw_string(app, draw, f, col, cx2, cy2, time_str);
+                int tw = text_width(app, f, time_str);
+                int tx = (W - tw) / 2;
+                int ty = top + (avail_h - (f->ascent + f->descent)) / 2 + f->ascent;
+                xft_draw_string(app, draw, f, col, tx, ty, time_str);
             }
         }
     }
 
-    /* Pause label */
+    /* ── Paused label ────────────────────────────────── */
     if (app->state == STATE_PAUSED) {
-        XftFont *f = get_font(app, 22, 0);
-        if (f) {
+        XftFont *f = get_font(app, 20, 0);
+        if (f)
             xft_draw_string_centered(app, draw, f, th->danger,
-                                     W/2, content_bot + 8, "PAUSED — click to resume");
-        }
+                                     W/2, bottom - 4, "PAUSED");
     }
 
-    /* Progress bar */
+    /* ── Progress bar — full width ───────────────────── */
     if (app->total_seconds > 0) {
-        int px = 60, py = H - prog_h - 20, pw = W - 120;
-        double frac = 1.0 - (double)app->remaining_exact / app->total_seconds;
-        if (frac < 0) frac = 0;
-        if (frac > 1) frac = 1;
-        int bar_w = (int)(pw * frac);
-        fill_rect(app, app->tmr_win, th->surface, px, py, pw, prog_h);
-        if (bar_w > 0) {
-            unsigned long bcol = timer_display_color(app);
-            fill_rect(app, app->tmr_win, bcol, px, py, bar_w, prog_h);
-        }
-        /* Track border */
-        draw_rect_outline(app, app->tmr_win, th->border, px, py, pw, prog_h);
+        double frac = 1.0 - app->remaining_exact / app->total_seconds;
+        if (frac < 0.0) frac = 0.0;
+        if (frac > 1.0) frac = 1.0;
+        int bar_w = (int)(W * frac);
+        fill_rect(app, buf, th->surface, 0, bottom, W, prog_h);
+        if (bar_w > 0)
+            fill_rect(app, buf, timer_display_color(app), 0, bottom, bar_w, prog_h);
     }
 
-    /* ESC hint */
-    {
-        XftFont *f = get_font(app, 9, 0);
-        if (f) {
-            const char *hint = "Right-click: mini   Middle-click/ESC: stop   Click: pause";
-            xft_draw_string_centered(app, draw, f, th->text_muted, W/2, H - 8, hint);
-        }
-    }
-
+    /* Blit to window */
+    XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
 }
 
@@ -1639,8 +1740,13 @@ static void draw_timer(App *app) {
 /* ─────────────────────────────────────────────────────── */
 
 static void destroy_timer_window(App *app) {
-    if (app->tmr_xft) { XftDrawDestroy(app->tmr_xft); app->tmr_xft = NULL; }
-    if (app->tmr_win) { XDestroyWindow(app->dpy, app->tmr_win); app->tmr_win = 0; }
+    /* Invalidate font cache when window is destroyed */
+    app->cd_font_sz = 0;
+    if (app->tmr_buf_xft) { XftDrawDestroy(app->tmr_buf_xft); app->tmr_buf_xft = NULL; }
+    if (app->tmr_buf)     { XFreePixmap(app->dpy, app->tmr_buf); app->tmr_buf = 0; }
+    app->tmr_buf_w = 0; app->tmr_buf_h = 0;
+    if (app->tmr_xft)  { XftDrawDestroy(app->tmr_xft);  app->tmr_xft  = NULL; }
+    if (app->tmr_win)  { XDestroyWindow(app->dpy, app->tmr_win); app->tmr_win = 0; }
     XFlush(app->dpy);
 }
 
@@ -1654,11 +1760,24 @@ static void create_timer_window(App *app) {
 
     if (app->mini) {
         /* ── Mini borderless window ─────────────────── */
-        int W = MINI_W;
-        int H = has_until ? MINI_H_UNTIL : MINI_H_BASE;
-        /* Top-right of current monitor */
-        int X = app->mon_x + app->mon_w - W - 20;
-        int Y = app->mon_y + 20;
+        int W, H, X, Y;
+        if (app->has_saved_mini) {
+            /* Restore saved size/position from before fullscreen */
+            W = app->saved_mini_w;
+            H = app->saved_mini_h;
+            X = app->saved_mini_x;
+            Y = app->saved_mini_y;
+            /* Clamp to monitor bounds */
+            if (X + W > app->mon_x + app->mon_w) X = app->mon_x + app->mon_w - W - 4;
+            if (Y + H > app->mon_y + app->mon_h) Y = app->mon_y + app->mon_h - H - 4;
+            if (X < app->mon_x) X = app->mon_x;
+            if (Y < app->mon_y) Y = app->mon_y;
+        } else {
+            W = MINI_W;
+            H = has_until ? MINI_H_UNTIL : MINI_H_BASE;
+            X = app->mon_x + app->mon_w - W - 20;
+            Y = app->mon_y + 20;
+        }
         app->tmr_w = W; app->tmr_h = H;
         app->tmr_x = X; app->tmr_y = Y;
 
@@ -1718,10 +1837,54 @@ static void create_timer_window(App *app) {
 /* Alert window                                            */
 /* ─────────────────────────────────────────────────────── */
 
+static void draw_alert_screen(App *app, AlertScreen *s,
+                               double elapsed, unsigned long bg_rgb,
+                               double brightness) {
+    ensure_alert_screen_buf(app, s);
+    if (!s->buf) return;
+    int W = s->w, H = s->h;
+    Drawable  buf  = s->buf;
+    XftDraw  *draw = s->buf_xft;
+
+    unsigned long text_col = (brightness > 0.55) ? 0x000000UL : 0xffffffUL;
+
+    fill_rect(app, buf, bg_rgb, 0, 0, W, H);
+
+    /* "Time's Up!" */
+    {
+        const char *msg = "Time's Up!";
+        int sz = fit_font_size(app, msg, W - 120, H / 4, 20, 180, 1);
+        XftFont *f = get_font(app, sz, 1);
+        if (f) xft_draw_string_centered(app, draw, f, text_col,
+                                         W/2, H/3 + f->ascent, msg);
+    }
+
+    if (app->task[0]) {
+        int sz = fit_font_size(app, app->task, W - 120, H / 8, 14, 72, 0);
+        XftFont *f = get_font(app, sz, 0);
+        if (f) xft_draw_string_centered(app, draw, f, text_col,
+                                         W/2, H/3 + H/5 + f->ascent, app->task);
+    }
+
+    /* Dismiss button */
+    {
+        unsigned long btn_bg = (brightness < 0.45) ? 0xffffffUL : 0x000000UL;
+        unsigned long btn_fg = (brightness < 0.45) ? 0x000000UL : 0xffffffUL;
+        int bw = 280, bh = 52;
+        int bx = (W - bw) / 2, by = H * 2 / 3;
+        fill_rect(app, buf, btn_bg, bx, by, bw, bh);
+        draw_rect_outline(app, buf, btn_fg, bx, by, bw, bh);
+        XftFont *f = get_font(app, 20, 1);
+        if (f) xft_draw_string_centered(app, draw, f, btn_fg,
+                                         W/2, by + (bh - f->ascent - f->descent)/2 + f->ascent,
+                                         "Dismiss  (ESC / click)");
+    }
+
+    XCopyArea(app->dpy, buf, s->win, app->gc, 0, 0, W, H, 0, 0);
+}
+
 static void draw_alert(App *app) {
-    if (!app->alert_win) return;
-    int W = app->mon_w, H = app->mon_h;
-    XftDraw *draw = app->alert_xft;
+    if (app->n_alert_screens == 0) return;
 
     struct timespec now_ts;
     clock_gettime(CLOCK_MONOTONIC, &now_ts);
@@ -1730,60 +1893,62 @@ static void draw_alert(App *app) {
     app->alert_frame++;
 
     unsigned long bg_rgb = alert_strobe_color(elapsed, app->alert_frame);
-    fill_rect(app, app->alert_win, bg_rgb, 0, 0, W, H);
-
-    /* Compute text brightness for contrast */
     int r2 = (bg_rgb >> 16) & 0xff;
     int g2 = (bg_rgb >> 8)  & 0xff;
     int b2 =  bg_rgb        & 0xff;
     double brightness = (r2 * 0.299 + g2 * 0.587 + b2 * 0.114) / 255.0;
-    unsigned long text_col = (brightness > 0.55) ? 0x000000UL : 0xffffffUL;
 
-    /* "Time's Up!" */
-    {
-        char msg[MAX_TASK + 32];
-        snprintf(msg, sizeof(msg), "Time's Up!");
-        int sz = fit_font_size(app, msg, W - 120, H / 4, 20, 180, 1);
-        XftFont *f = get_font(app, sz, 1);
-        if (f) xft_draw_string_centered(app, draw, f, text_col, W/2,
-                                         H/3 + f->ascent, msg);
-    }
-
-    /* Task name */
-    if (app->task[0]) {
-        int sz = fit_font_size(app, app->task, W - 120, H / 8, 14, 72, 0);
-        XftFont *f = get_font(app, sz, 0);
-        if (f) xft_draw_string_centered(app, draw, f, text_col, W/2,
-                                         H/3 + H/5 + f->ascent, app->task);
-    }
-
-    /* Dismiss button area */
-    {
-        unsigned long btn_bg = (brightness < 0.45) ? 0xffffffUL : 0x000000UL;
-        unsigned long btn_fg = (brightness < 0.45) ? 0x000000UL : 0xffffffUL;
-        int bw = 280, bh = 52;
-        int bx = (W - bw) / 2, by = H * 2 / 3;
-        fill_rect(app, app->alert_win, btn_bg, bx, by, bw, bh);
-        draw_rect_outline(app, app->alert_win, btn_fg, bx, by, bw, bh);
-        XftFont *f = get_font(app, 20, 1);
-        if (f) xft_draw_string_centered(app, draw, f, btn_fg,
-                                         W/2, by + f->ascent + (bh - f->ascent - f->descent)/2,
-                                         "Dismiss  (ESC / click)");
-    }
+    for (int i = 0; i < app->n_alert_screens; i++)
+        draw_alert_screen(app, &app->alert_screens[i], elapsed, bg_rgb, brightness);
 
     XFlush(app->dpy);
 }
 
-static void create_alert_window(App *app) {
-    if (app->alert_xft) { XftDrawDestroy(app->alert_xft); app->alert_xft = NULL; }
-    if (app->alert_win) { XDestroyWindow(app->dpy, app->alert_win); app->alert_win = 0; }
+static void destroy_alert_windows(App *app) {
+    for (int i = 0; i < app->n_alert_screens; i++) {
+        AlertScreen *s = &app->alert_screens[i];
+        if (s->buf_xft) { XftDrawDestroy(s->buf_xft); s->buf_xft = NULL; }
+        if (s->buf)     { XFreePixmap(app->dpy, s->buf); s->buf = 0; }
+        if (s->xft)     { XftDrawDestroy(s->xft); s->xft = NULL; }
+        if (s->win)     { XDestroyWindow(app->dpy, s->win); s->win = 0; }
+    }
+    app->n_alert_screens = 0;
+}
 
+static void create_alert_windows(App *app) {
+    destroy_alert_windows(app);
     clock_gettime(CLOCK_MONOTONIC, &app->alert_start_ts);
     app->alert_frame = 0;
 
     Window root = DefaultRootWindow(app->dpy);
-    int W = app->mon_w, H = app->mon_h;
-    int X = app->mon_x, Y = app->mon_y;
+
+    /* Enumerate monitors via XRandR */
+    int n_mons = 0;
+    int mx[MAX_MONITORS], my[MAX_MONITORS], mw[MAX_MONITORS], mh[MAX_MONITORS];
+
+    int eb, err;
+    if (XRRQueryExtension(app->dpy, &eb, &err)) {
+        XRRScreenResources *res = XRRGetScreenResourcesCurrent(app->dpy, root);
+        if (res) {
+            for (int i = 0; i < res->ncrtc && n_mons < MAX_MONITORS; i++) {
+                XRRCrtcInfo *ci = XRRGetCrtcInfo(app->dpy, res, res->crtcs[i]);
+                if (!ci) continue;
+                if (ci->width > 0 && ci->height > 0) {
+                    mx[n_mons] = ci->x; my[n_mons] = ci->y;
+                    mw[n_mons] = (int)ci->width; mh[n_mons] = (int)ci->height;
+                    n_mons++;
+                }
+                XRRFreeCrtcInfo(ci);
+            }
+            XRRFreeScreenResources(res);
+        }
+    }
+    if (n_mons == 0) {
+        mx[0] = 0; my[0] = 0;
+        mw[0] = DisplayWidth(app->dpy, app->screen);
+        mh[0] = DisplayHeight(app->dpy, app->screen);
+        n_mons = 1;
+    }
 
     XSetWindowAttributes swa;
     swa.override_redirect = True;
@@ -1791,16 +1956,21 @@ static void create_alert_window(App *app) {
     swa.colormap          = app->cmap;
     swa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask;
 
-    app->alert_win = XCreateWindow(
-        app->dpy, root, X, Y, W, H, 0,
-        app->depth, InputOutput, app->vis,
-        CWOverrideRedirect | CWBackPixel | CWColormap | CWEventMask, &swa);
+    for (int i = 0; i < n_mons; i++) {
+        AlertScreen *s = &app->alert_screens[i];
+        s->x = mx[i]; s->y = my[i]; s->w = mw[i]; s->h = mh[i];
+        s->buf = 0; s->buf_xft = NULL;
+        s->win = XCreateWindow(app->dpy, root, s->x, s->y, s->w, s->h, 0,
+            app->depth, InputOutput, app->vis,
+            CWOverrideRedirect | CWBackPixel | CWColormap | CWEventMask, &swa);
+        XMapRaised(app->dpy, s->win);
+        s->xft = make_xft_draw(app, s->win);
+    }
+    app->n_alert_screens = n_mons;
 
-    XMapRaised(app->dpy, app->alert_win);
-    XSetInputFocus(app->dpy, app->alert_win, RevertToNone, CurrentTime);
+    if (n_mons > 0)
+        XSetInputFocus(app->dpy, app->alert_screens[0].win, RevertToNone, CurrentTime);
     XFlush(app->dpy);
-
-    app->alert_xft = make_xft_draw(app, app->alert_win);
 }
 
 /* ─────────────────────────────────────────────────────── */
@@ -1812,11 +1982,12 @@ static void do_quit(App *app) {
     app->alert_audio_active = 0;
     kill_all_audio(app);
     db_finish_session(app, "stopped");
-    if (app->alert_xft) { XftDrawDestroy(app->alert_xft); app->alert_xft = NULL; }
-    if (app->alert_win) { XDestroyWindow(app->dpy, app->alert_win); app->alert_win = 0; }
+    destroy_alert_windows(app);
     destroy_timer_window(app);
-    if (app->cfg_xft)  { XftDrawDestroy(app->cfg_xft);  app->cfg_xft  = NULL; }
-    if (app->cfg_win)  { XDestroyWindow(app->dpy, app->cfg_win); app->cfg_win = 0; }
+    if (app->cfg_buf_xft) { XftDrawDestroy(app->cfg_buf_xft); app->cfg_buf_xft = NULL; }
+    if (app->cfg_buf)     { XFreePixmap(app->dpy, app->cfg_buf); app->cfg_buf = 0; }
+    if (app->cfg_xft)     { XftDrawDestroy(app->cfg_xft);  app->cfg_xft  = NULL; }
+    if (app->cfg_win)     { XDestroyWindow(app->dpy, app->cfg_win); app->cfg_win = 0; }
     XFlush(app->dpy);
     app->state = STATE_DONE;
 }
@@ -1873,7 +2044,28 @@ static void start_running(App *app) {
 }
 
 static void toggle_mini_fullscreen(App *app) {
-    app->mini = !app->mini;
+    if (app->mini) {
+        /* mini → fullscreen: detect which monitor the mini window lives on */
+        app->saved_mini_x = app->tmr_x;
+        app->saved_mini_y = app->tmr_y;
+        app->saved_mini_w = app->tmr_w;
+        app->saved_mini_h = app->tmr_h;
+        app->has_saved_mini = 1;
+        detect_monitor(app, app->tmr_x + app->tmr_w/2, app->tmr_y + app->tmr_h/2);
+        app->mini = 0;
+    } else {
+        /* fullscreen → mini: use the pointer position to pick the right monitor */
+        Window root_ret, child_ret;
+        int root_x = app->mon_x + app->mon_w/2;
+        int root_y = app->mon_y + app->mon_h/2;
+        int win_x, win_y;
+        unsigned int mask;
+        XQueryPointer(app->dpy, DefaultRootWindow(app->dpy),
+                      &root_ret, &child_ret,
+                      &root_x, &root_y, &win_x, &win_y, &mask);
+        detect_monitor(app, root_x, root_y);
+        app->mini = 1;
+    }
     app_log(app, "INFO", "Toggled to %s mode", app->mini ? "mini" : "fullscreen");
     create_timer_window(app);
     play_cue(app, app->mini ? "pause" : "resume");
@@ -1919,7 +2111,7 @@ static void timer_finished(App *app) {
     } else {
         /* Alert mode */
         play_cue(app, "alert_open");
-        create_alert_window(app);
+        create_alert_windows(app);
         app->state = STATE_ALERT;
         play_alert_sound(app);
     }
@@ -2100,10 +2292,27 @@ static void handle_event(App *app, XEvent *ev) {
             handle_config_key(app, &ev->xkey);
             break;
         case ButtonPress:
-            /* Right-click = fullscreen start, left-click = focus */
-            if (ev->xbutton.button == Button3) {
+            if (ev->xbutton.button == Button1) {
+                app->cfg_is_dragging = 1;
+                app->cfg_drag_px = ev->xbutton.x_root;
+                app->cfg_drag_py = ev->xbutton.y_root;
+                app->cfg_drag_wx = app->cfg_x;
+                app->cfg_drag_wy = app->cfg_y;
+            } else if (ev->xbutton.button == Button3) {
                 app->fullscreen_requested = 1;
                 app->mini = 0;
+            }
+            break;
+        case ButtonRelease:
+            app->cfg_is_dragging = 0;
+            break;
+        case MotionNotify:
+            if (app->cfg_is_dragging) {
+                int dx = ev->xmotion.x_root - app->cfg_drag_px;
+                int dy = ev->xmotion.y_root - app->cfg_drag_py;
+                app->cfg_x = app->cfg_drag_wx + dx;
+                app->cfg_y = app->cfg_drag_wy + dy;
+                XMoveWindow(app->dpy, app->cfg_win, app->cfg_x, app->cfg_y);
             }
             break;
         case ClientMessage:
@@ -2196,8 +2405,10 @@ static void handle_event(App *app, XEvent *ev) {
         return;
     }
 
-    /* Alert window events */
-    if (app->alert_win && ev->xany.window == app->alert_win) {
+    /* Alert window events — any monitor window triggers dismiss */
+    for (int i = 0; i < app->n_alert_screens; i++) {
+        if (!app->alert_screens[i].win) continue;
+        if (ev->xany.window != app->alert_screens[i].win) continue;
         switch (ev->type) {
         case Expose:
             if (ev->xexpose.count == 0) draw_alert(app);
@@ -2527,9 +2738,13 @@ int main(int argc, char **argv) {
     main_loop(&app);
 
     /* Cleanup */
-    if (app.tmr_xft)   XftDrawDestroy(app.tmr_xft);
-    if (app.cfg_xft)   XftDrawDestroy(app.cfg_xft);
-    if (app.alert_xft) XftDrawDestroy(app.alert_xft);
+    if (app.tmr_buf_xft)   { XftDrawDestroy(app.tmr_buf_xft); }
+    if (app.tmr_buf)       { XFreePixmap(app.dpy, app.tmr_buf); }
+    if (app.cfg_buf_xft)   { XftDrawDestroy(app.cfg_buf_xft); }
+    if (app.cfg_buf)       { XFreePixmap(app.dpy, app.cfg_buf); }
+    /* Alert screens freed by destroy_alert_windows (called from do_quit) */
+    if (app.tmr_xft) XftDrawDestroy(app.tmr_xft);
+    if (app.cfg_xft) XftDrawDestroy(app.cfg_xft);
     if (app.gc)        XFreeGC(app.dpy, app.gc);
     for (int i = 0; i < app.n_fonts; i++)
         if (app.fonts[i].font) XftFontClose(app.dpy, app.fonts[i].font);
