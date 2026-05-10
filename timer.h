@@ -13,6 +13,7 @@
 #include <X11/XKBlib.h>
 #include <X11/cursorfont.h>
 #include <X11/Xft/Xft.h>
+#include <X11/extensions/Xinerama.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/Xrender.h>
 
@@ -144,6 +145,9 @@ typedef struct {
     Atom net_wm_state_above;
     Atom net_wm_state_fullscreen;
     Atom net_wm_state_skip_taskbar;
+    Atom net_wm_state_sticky;
+    Atom net_wm_desktop;
+    Atom net_wm_bypass_compositor;
     Atom net_wm_window_type;
     Atom net_wm_window_type_dock;
 

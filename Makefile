@@ -3,12 +3,12 @@ TARGET  = timer
 SRCS    = timer.c draw.c parse.c audio.c db.c
 
 CFLAGS  = -O2 -Wall -Wextra -Wno-unused-parameter \
-          $(shell pkg-config --cflags x11 xft xrandr 2>/dev/null) \
+          $(shell pkg-config --cflags x11 xft xinerama xrandr 2>/dev/null) \
           -I/usr/include
 
-LDFLAGS = $(shell pkg-config --libs x11 xft xrandr 2>/dev/null) \
+LDFLAGS = $(shell pkg-config --libs x11 xft xinerama xrandr 2>/dev/null) \
           -lsqlite3 -lm -lpthread
-LDFLAGS += -lX11 -lXft -lXrandr -lXrender -lfontconfig
+LDFLAGS += -lX11 -lXft -lXinerama -lXrandr -lXrender -lfontconfig
 
 OBJS    = $(SRCS:.c=.o)
 

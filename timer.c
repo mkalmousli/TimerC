@@ -26,38 +26,66 @@ void app_log(App *app, const char *level, const char *fmt, ...) {
 /* ── Monitor detection (XRandR) ────────────────────────── */
 
 void detect_monitor(App *app, int ptr_x, int ptr_y) {
+    int fallback_w = DisplayWidth(app->dpy, app->screen);
+    int fallback_h = DisplayHeight(app->dpy, app->screen);
     app->mon_x = 0; app->mon_y = 0;
-    app->mon_w = DisplayWidth(app->dpy, app->screen);
-    app->mon_h = DisplayHeight(app->dpy, app->screen);
+    app->mon_w = fallback_w;
+    app->mon_h = fallback_h;
+
+    int xin_event_base, xin_error_base;
+    if (XineramaQueryExtension(app->dpy, &xin_event_base, &xin_error_base) &&
+        XineramaIsActive(app->dpy)) {
+        int nscreen = 0;
+        XineramaScreenInfo *screens = XineramaQueryScreens(app->dpy, &nscreen);
+        if (screens && nscreen > 0) {
+            int best_x = 0, best_y = 0, best_w = 0, best_h = 0;
+            long long best_dist = 0;
+            int have_best = 0;
+
+            for (int i = 0; i < nscreen; i++) {
+                int x = screens[i].x_org, y = screens[i].y_org;
+                int w = screens[i].width, h = screens[i].height;
+                if (w <= 0 || h <= 0) continue;
+                if (ptr_x >= x && ptr_x < x+w && ptr_y >= y && ptr_y < y+h) {
+                    app->mon_x = x; app->mon_y = y;
+                    app->mon_w = w; app->mon_h = h;
+                    XFree(screens);
+                    return;
+                }
+
+                long long cx = x + w / 2;
+                long long cy = y + h / 2;
+                long long dx = (long long)ptr_x - cx;
+                long long dy = (long long)ptr_y - cy;
+                long long dist = dx * dx + dy * dy;
+                if (!have_best || dist < best_dist) {
+                    best_x = x; best_y = y; best_w = w; best_h = h;
+                    best_dist = dist;
+                    have_best = 1;
+                }
+            }
+
+            if (have_best) {
+                app->mon_x = best_x; app->mon_y = best_y;
+                app->mon_w = best_w; app->mon_h = best_h;
+                XFree(screens);
+                return;
+            }
+        }
+        if (screens) XFree(screens);
+    }
 
     int event_base, error_base;
     if (!XRRQueryExtension(app->dpy, &event_base, &error_base)) return;
 
     Window root = DefaultRootWindow(app->dpy);
 
-    int rr_major = 0, rr_minor = 0;
-    if (XRRQueryVersion(app->dpy, &rr_major, &rr_minor) &&
-        (rr_major > 1 || (rr_major == 1 && rr_minor >= 5))) {
-        int nmon = 0;
-        XRRMonitorInfo *monitors = XRRGetMonitors(app->dpy, root, True, &nmon);
-        if (monitors) {
-            for (int i = 0; i < nmon; i++) {
-                XRRMonitorInfo *mi = &monitors[i];
-                if (mi->width <= 0 || mi->height <= 0) continue;
-                if (ptr_x >= mi->x && ptr_x < mi->x + mi->width &&
-                    ptr_y >= mi->y && ptr_y < mi->y + mi->height) {
-                    app->mon_x = mi->x; app->mon_y = mi->y;
-                    app->mon_w = mi->width; app->mon_h = mi->height;
-                    XRRFreeMonitors(monitors);
-                    return;
-                }
-            }
-            XRRFreeMonitors(monitors);
-        }
-    }
-
     XRRScreenResources *res = XRRGetScreenResourcesCurrent(app->dpy, root);
     if (!res) return;
+
+    int best_x = 0, best_y = 0, best_w = 0, best_h = 0;
+    long long best_dist = 0;
+    int have_best = 0;
 
     for (int i = 0; i < res->ncrtc; i++) {
         XRRCrtcInfo *ci = XRRGetCrtcInfo(app->dpy, res, res->crtcs[i]);
@@ -68,10 +96,27 @@ void detect_monitor(App *app, int ptr_x, int ptr_y) {
                 app->mon_x = x; app->mon_y = y;
                 app->mon_w = w; app->mon_h = h;
                 XRRFreeCrtcInfo(ci);
-                break;
+                XRRFreeScreenResources(res);
+                return;
+            }
+
+            long long cx = x + w / 2;
+            long long cy = y + h / 2;
+            long long dx = (long long)ptr_x - cx;
+            long long dy = (long long)ptr_y - cy;
+            long long dist = dx * dx + dy * dy;
+            if (!have_best || dist < best_dist) {
+                best_x = x; best_y = y; best_w = w; best_h = h;
+                best_dist = dist;
+                have_best = 1;
             }
         }
         XRRFreeCrtcInfo(ci);
+    }
+
+    if (have_best) {
+        app->mon_x = best_x; app->mon_y = best_y;
+        app->mon_w = best_w; app->mon_h = best_h;
     }
     XRRFreeScreenResources(res);
 }
@@ -592,6 +637,9 @@ static int app_init(App *app) {
     app->net_wm_state_above        = XInternAtom(app->dpy, "_NET_WM_STATE_ABOVE",        False);
     app->net_wm_state_fullscreen   = XInternAtom(app->dpy, "_NET_WM_STATE_FULLSCREEN",   False);
     app->net_wm_state_skip_taskbar = XInternAtom(app->dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+    app->net_wm_state_sticky       = XInternAtom(app->dpy, "_NET_WM_STATE_STICKY",       False);
+    app->net_wm_desktop            = XInternAtom(app->dpy, "_NET_WM_DESKTOP",            False);
+    app->net_wm_bypass_compositor  = XInternAtom(app->dpy, "_NET_WM_BYPASS_COMPOSITOR",  False);
     app->net_wm_window_type        = XInternAtom(app->dpy, "_NET_WM_WINDOW_TYPE",        False);
     app->net_wm_window_type_dock   = XInternAtom(app->dpy, "_NET_WM_WINDOW_TYPE_DOCK",   False);
 

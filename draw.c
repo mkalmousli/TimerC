@@ -58,6 +58,7 @@ static const char *QUOTES[] = {
 };
 #define N_QUOTES ((int)(sizeof(QUOTES)/sizeof(QUOTES[0])))
 #define QUOTE_MORPH_MS   950
+#define NET_WM_DESKTOP_ALL 0xffffffffUL
 
 /* ── Color utilities ───────────────────────────────────── */
 
@@ -69,6 +70,20 @@ static unsigned long rgb_pixel(App *app, unsigned long rgb) {
     c.flags = DoRed | DoGreen | DoBlue;
     XAllocColor(app->dpy, app->cmap, &c);
     return c.pixel;
+}
+
+static void set_window_on_all_workspaces(App *app, Window win) {
+    unsigned long desktop = NET_WM_DESKTOP_ALL;
+    XChangeProperty(app->dpy, win, app->net_wm_desktop,
+                    XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char *)&desktop, 1);
+}
+
+static void disable_compositor_bypass(App *app, Window win) {
+    unsigned long value = 2; /* EWMH: ask compositor not to unredirect this window. */
+    XChangeProperty(app->dpy, win, app->net_wm_bypass_compositor,
+                    XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char *)&value, 1);
 }
 
 static void rgb_xft(App *app, unsigned long rgb, XftColor *out) {
@@ -1152,12 +1167,12 @@ void create_timer_window(App *app) {
         app->tmr_x = X; app->tmr_y = Y;
 
         XSetWindowAttributes swa;
-        swa.override_redirect = False;
+        swa.override_redirect = True;
         swa.background_pixel  = rgb_pixel(app, th->bg);
         swa.border_pixel      = 0;
         swa.colormap          = app->cmap;
         swa.event_mask        = ExposureMask | ButtonPressMask
-                              | ButtonReleaseMask | KeyPressMask | StructureNotifyMask;
+                              | ButtonReleaseMask | StructureNotifyMask;
         app->tmr_win = XCreateWindow(app->dpy, root, X, Y, W, H, 0,
             app->depth, InputOutput, app->vis,
             CWOverrideRedirect|CWBackPixel|CWBorderPixel|CWColormap|CWEventMask, &swa);
@@ -1168,9 +1183,12 @@ void create_timer_window(App *app) {
         hints.input = False;
         XSetWMHints(app->dpy, app->tmr_win, &hints);
 
+        set_window_on_all_workspaces(app, app->tmr_win);
+        disable_compositor_bypass(app, app->tmr_win);
+
         Atom states[3] = {
-            app->net_wm_state_fullscreen,
             app->net_wm_state_above,
+            app->net_wm_state_sticky,
             app->net_wm_state_skip_taskbar
         };
         XChangeProperty(app->dpy, app->tmr_win, app->net_wm_state,
