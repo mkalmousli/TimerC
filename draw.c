@@ -1147,6 +1147,13 @@ static void draw_timer_fullscreen(App *app) {
 }
 
 void draw_timer(App *app) {
+#ifdef USE_GL
+    if (app->use_gl) {
+        gl_make_current(app, app->tmr_win);
+        gl_draw_timer(app);
+        return;
+    }
+#endif
     if (app->mini) draw_timer_mini(app);
     else            draw_timer_fullscreen(app);
 }
@@ -1156,6 +1163,13 @@ void draw_timer(App *app) {
 void destroy_timer_window(App *app) {
     app->cd_font_sz = 0;
     app->cursor_in_resize = 0;
+#ifdef USE_GL
+    if (app->use_gl) {
+        if (app->tmr_win) { XDestroyWindow(app->dpy, app->tmr_win); app->tmr_win = 0; }
+        XFlush(app->dpy);
+        return;
+    }
+#endif
     if (app->tmr_buf_xft) { XftDrawDestroy(app->tmr_buf_xft); app->tmr_buf_xft = NULL; }
     if (app->tmr_buf)     { XFreePixmap(app->dpy, app->tmr_buf); app->tmr_buf = 0; }
     app->tmr_buf_w = 0; app->tmr_buf_h = 0;
@@ -1169,6 +1183,33 @@ void create_timer_window(App *app) {
     const Theme *th = cur_theme(app);
     Window root = DefaultRootWindow(app->dpy);
     int has_until = app->until_str[0] != '\0';
+
+#ifdef USE_GL
+    if (app->use_gl) {
+        int X, Y, W, H;
+        if (app->mini) {
+            if (app->has_saved_mini) {
+                W = app->saved_mini_w; H = app->saved_mini_h;
+                X = app->saved_mini_x; Y = app->saved_mini_y;
+            } else {
+                W = MINI_W;
+                H = has_until ? MINI_H_UNTIL : MINI_H_BASE;
+                X = app->mon_x + app->mon_w - W - 20;
+                Y = app->mon_y + 20;
+            }
+        } else {
+            W = app->mon_w; H = app->mon_h; X = app->mon_x; Y = app->mon_y;
+        }
+        app->tmr_w = W; app->tmr_h = H;
+        app->tmr_x = X; app->tmr_y = Y;
+        app->tmr_win = gl_create_timer_window(app, X, Y, W, H, !app->mini);
+        if (app->tmr_win) {
+            gl_make_current(app, app->tmr_win);
+            draw_timer(app);
+        }
+        return;
+    }
+#endif
 
     if (app->mini) {
         int W, H, X, Y;

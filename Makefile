@@ -8,6 +8,12 @@ CFLAGS  = -O2 -Wall -Wextra -Wno-unused-parameter \
 
 LDFLAGS = $(shell pkg-config --libs x11 xft xinerama xrandr 2>/dev/null) \
           -lsqlite3 -lm -lpthread
+ifeq ($(USE_GL),1)
+SRCS += gl.c
+CFLAGS += -DUSE_GL
+LDFLAGS += -lGL -lGLX
+endif
+
 LDFLAGS += -lX11 -lXft -lXinerama -lXrandr -lXrender -lfontconfig
 
 OBJS    = $(SRCS:.c=.o)
@@ -25,6 +31,6 @@ install: $(TARGET)
 	@echo "Installed to $(HOME)/.local/bin/$(TARGET)"
 
 clean:
-	rm -f $(TARGET) $(OBJS)
+	rm -f $(TARGET) *.o
 
 .PHONY: all install clean

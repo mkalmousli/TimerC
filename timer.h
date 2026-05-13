@@ -17,6 +17,11 @@
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/Xrender.h>
 
+#ifdef USE_GL
+#include <GL/gl.h>
+#include <GL/glx.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -247,6 +252,14 @@ typedef struct {
     Cursor     cursor_resize;
     int        cursor_in_resize;
 
+    /* OpenGL (optional) */
+    int        use_gl;
+#ifdef USE_GL
+    GLXContext glx_ctx;
+    XVisualInfo *glx_vi;
+    Colormap   glx_cmap;
+#endif
+
     /* Alert animation */
     struct timespec alert_start_ts;
     int        alert_frame;
@@ -331,3 +344,11 @@ void create_timer_window(App *app);
 void destroy_timer_window(App *app);
 void create_alert_windows(App *app);
 void destroy_alert_windows(App *app);
+
+#ifdef USE_GL
+int    gl_init(App *app);
+void   gl_shutdown(App *app);
+Window gl_create_timer_window(App *app, int x, int y, int w, int h, int fullscreen);
+void   gl_make_current(App *app, Window win);
+void   gl_draw_timer(App *app);
+#endif

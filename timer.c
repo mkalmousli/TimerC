@@ -706,7 +706,7 @@ static void print_usage(const char *prog) {
         "Usage: %s [time] [task] [options]\n\n"
         "Time formats: 25m  1h30m  45  30:00  1:30:00  u15:30  u1520\n"
         "Switches (prefix):  d=shutdown  a=alert  f/r=fullscreen  p=pausable\n"
-        "Options: -m alert|shutdown  -p  -f  --theme NAME  -h\n"
+        "Options: -m alert|shutdown  -p  -f  --theme NAME  --gl  -h\n"
         "Example: %s 25m focus  |  %s u16:30 meeting  |  %s\n",
         prog, prog, prog, prog);
 }
@@ -724,6 +724,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { print_usage(argv[0]); return 0; }
+        if (!strcmp(a, "--gl")) { app.use_gl = 1; continue; }
         if (!strcmp(a, "-p") || !strcmp(a, "--pausable"))   { cli_pausable   = 1; continue; }
         if (!strcmp(a, "-f") || !strcmp(a, "--fullscreen"))  { cli_fullscreen = 1; continue; }
         if ((!strcmp(a, "-m") || !strcmp(a, "--mode")) && i+1 < argc) {
@@ -780,6 +781,13 @@ int main(int argc, char **argv) {
         Window r2, c2; int rx, ry, wx, wy; unsigned int msk;
         XQueryPointer(app.dpy, DefaultRootWindow(app.dpy), &r2, &c2, &rx, &ry, &wx, &wy, &msk);
         detect_monitor(&app, rx, ry);
+#ifdef USE_GL
+        if (app.use_gl) {
+            if (!gl_init(&app)) app.use_gl = 0;
+        }
+#else
+        app.use_gl = 0;
+#endif
         start_running(&app);
     } else {
         create_config_window(&app);
@@ -804,6 +812,9 @@ int main(int argc, char **argv) {
         if (app.fonts[i].font) XftFontClose(app.dpy, app.fonts[i].font);
     if (app.db)    sqlite3_close(app.db);
     if (app.logfp) fclose(app.logfp);
+#ifdef USE_GL
+    if (app.use_gl) gl_shutdown(&app);
+#endif
     if (app.dpy)   XCloseDisplay(app.dpy);
     pthread_mutex_destroy(&app.audio_lock);
     return 0;
