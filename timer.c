@@ -605,7 +605,9 @@ static void main_loop(App *app) {
         int tick_ms = 250;
         switch (app->state) {
         case STATE_CONFIG:  tick_ms = TICK_CONFIG_MS;        break;
-        case STATE_RUNNING: tick_ms = TICK_TIMER_RUN_MS;     break;
+        case STATE_RUNNING:
+            tick_ms = (app->remaining_seconds <= 10) ? TICK_TIMER_LAST10_MS : TICK_TIMER_RUN_MS;
+            break;
         case STATE_PAUSED:  tick_ms = TICK_TIMER_PAUSED_MS;  break;
         case STATE_ALERT:   tick_ms = TICK_ALERT_MS;         break;
         default:            tick_ms = 250;                   break;

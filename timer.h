@@ -52,9 +52,10 @@
 #define MAX_FONT_CACHE  64
 
 /* Tick pacing (lower = smoother, higher = lower CPU/GPU) */
-#define TICK_CONFIG_MS        200
-#define TICK_TIMER_RUN_MS     200
-#define TICK_TIMER_PAUSED_MS  500
+#define TICK_CONFIG_MS        500
+#define TICK_TIMER_RUN_MS    1000
+#define TICK_TIMER_LAST10_MS  100
+#define TICK_TIMER_PAUSED_MS 1000
 #define TICK_ALERT_MS          50
 
 /* Config window dimensions */

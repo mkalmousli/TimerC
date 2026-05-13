@@ -1,6 +1,11 @@
 /* draw.c — All X11 UI rendering and window management */
 #include "timer.h"
 
+/* Default to a lightweight render path (less CPU/GPU, fewer animations). */
+#ifndef LOW_POWER
+#define LOW_POWER 1
+#endif
+
 /* ── Theme data ────────────────────────────────────────── */
 
 const Theme THEMES[N_THEMES] = {
@@ -346,11 +351,17 @@ static void draw_quote_morph(App *app, XftDraw *draw, XftFont *font,
 }
 
 /* Render text stretched to exactly (area_w × area_h) via XRender bilinear scale */
+#if !LOW_POWER
 static void draw_text_stretched(App *app, Pixmap buf,
                                  int area_x, int area_y, int area_w, int area_h,
                                  XftFont *f, unsigned long col, unsigned long bg,
                                  const char *text) {
     if (!f || !text || !text[0] || area_w <= 0 || area_h <= 0) return;
+#if LOW_POWER
+    (void)app; (void)buf; (void)area_x; (void)area_y; (void)area_w; (void)area_h;
+    (void)f; (void)col; (void)bg; (void)text;
+    return;
+#else
     int src_w = text_width(app, f, text);
     int src_h = f->ascent + f->descent;
     if (src_w <= 0 || src_h <= 0) return;
@@ -385,7 +396,9 @@ static void draw_text_stretched(App *app, Pixmap buf,
         XCopyArea(app->dpy, src, buf, app->gc, 0, 0, src_w, src_h, dx, dy);
     }
     XFreePixmap(app->dpy, src);
+#endif
 }
+#endif
 
 /* ── Theme / display-color helpers ────────────────────── */
 
@@ -412,12 +425,16 @@ static const Theme *cfg_theme(App *app) {
 /* Smooth sinusoidal pulse for the shutdown icon: always red, breathing
  * between 25 % and 100 % brightness at ~3.5 Hz to signal urgency. */
 static unsigned long shutdown_pulse_color(const Theme *th) {
+#if LOW_POWER
+    return th->danger;
+#else
     double frac   = 0.5 + 0.5 * sin(monotonic_now() * TAU * 3.5);
     double bright = 0.25 + 0.75 * frac;
     int r = (int)(((th->danger >> 16) & 0xff) * bright);
     int g = (int)(((th->danger >>  8) & 0xff) * bright);
     int b = (int)(( th->danger        & 0xff) * bright);
     return ((unsigned long)r << 16) | ((unsigned long)g << 8) | (unsigned long)b;
+#endif
 }
 
 static unsigned long timer_display_color(App *app) {
@@ -430,11 +447,15 @@ static unsigned long timer_display_color(App *app) {
     unsigned long color = (frac >= 0.8f) ? th->lcd_active
                         : lerp_rgb(th->lcd_active, th->lcd_paused, (0.8-frac)/0.8);
 
+#if LOW_POWER
+    return color;
+#else
     double pulse = 0.94 + 0.06 * (0.5 + 0.5 * sin(monotonic_now() * TAU / 5.5));
     int r  = (int)(((color>>16)&0xff) * pulse); if (r>255) r=255; if (r<0) r=0;
     int g  = (int)(((color>>8) &0xff) * pulse); if (g>255) g=255; if (g<0) g=0;
     int b2 = (int)(( color     &0xff) * pulse); if (b2>255) b2=255; if (b2<0) b2=0;
     return ((unsigned long)r<<16)|((unsigned long)g<<8)|(unsigned long)b2;
+#endif
 }
 
 static unsigned long alert_strobe_color(double elapsed, int frame) {
@@ -939,6 +960,9 @@ void draw_timer_mini(App *app) {
         int cd_y = y + pad;
         int cd_w = cw;
         int cd_h = cy2 - pad - cd_y;
+#if LOW_POWER
+        (void)cd_x;
+#endif
 
         char time_str[16];
         format_time(app->remaining_seconds, time_str, sizeof(time_str));
@@ -958,9 +982,16 @@ void draw_timer_mini(App *app) {
                 app->cd_font_fmt_len = fmt_len;
             }
             XftFont *f = get_font(app, app->cd_font_sz, 3);
-            if (f && show)
+            if (f && show) {
+#if LOW_POWER
+                xft_draw_string_centered(app, draw, f, timer_display_color(app),
+                                         W / 2, cd_y + (cd_h - (f->ascent + f->descent)) / 2 + f->ascent,
+                                         time_str);
+#else
                 draw_text_stretched(app, buf, cd_x, cd_y, cd_w, cd_h,
                                     f, timer_display_color(app), th->bg, time_str);
+#endif
+            }
             if (app->state == STATE_PAUSED) {
                 int psz = scaled(H / 12, 6, 10);
                 XftFont *pf = get_font(app, psz, 0);
@@ -1060,6 +1091,9 @@ static void draw_timer_fullscreen(App *app) {
         int cd_y  = top + pad;
         int cd_w  = W - h_margin * 2 - pad * 2;
         int cd_h  = bottom - top - pause_rsv - pad * 2;
+#if LOW_POWER
+        (void)cd_x;
+#endif
 
         int show = (app->state != STATE_PAUSED) ||
                    ((int)(monotonic_now() * 2) % 2 == 0);
@@ -1076,9 +1110,16 @@ static void draw_timer_fullscreen(App *app) {
                 app->cd_font_fmt_len = fmt_len;
             }
             XftFont *f = get_font(app, app->cd_font_sz, 3);
-            if (f && show)
+            if (f && show) {
+#if LOW_POWER
+                xft_draw_string_centered(app, draw, f, timer_display_color(app),
+                                         W / 2, cd_y + (cd_h - (f->ascent + f->descent)) / 2 + f->ascent,
+                                         time_str);
+#else
                 draw_text_stretched(app, buf, cd_x, cd_y, cd_w, cd_h,
                                     f, timer_display_color(app), th->bg, time_str);
+#endif
+            }
         }
     }
 
