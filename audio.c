@@ -183,21 +183,26 @@ static void *audio_writer_thread(void *arg) {
         if (!chunk) goto done;
         while (*job->active_flag) {
             float elapsed = (float)phase / SAMPLE_RATE;
-            float ramp = fminf(1.0f, elapsed / job->alert_ramp_seconds);
+            float t = (job->alert_ramp_seconds > 0.1f)
+                      ? (elapsed / job->alert_ramp_seconds) : 1.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            /* Start very gentle, then accelerate (avoids a "shock" at t=0). */
+            float ramp = 0.02f + 0.98f * (t * t);
             for (int i = 0; i < CHUNK; i++) {
-                float t = (float)(phase + i) / SAMPLE_RATE;
-                float chirp   = fmodf(t, 0.20f);
+                float tt = (float)(phase + i) / SAMPLE_RATE;
+                float chirp   = fmodf(tt, 0.20f);
                 float gate    = chirp < 0.145f ? 1.0f : 0.0f;
                 float attack  = fminf(1.0f, chirp / 0.004f);
                 float release = fminf(1.0f, fmaxf(0.0f, (0.145f - chirp) / 0.018f));
                 float env     = gate * attack * release;
                 float sweep   = chirp < 0.145f ? chirp / 0.145f : 1.0f;
                 float sfreq   = 820.0f + 760.0f * sweep;
-                float warble  = ((int)(t * 12) % 2) ? 1.0f : 0.72f;
+                float warble  = ((int)(tt * 12) % 2) ? 1.0f : 0.72f;
                 float f2      = sfreq * warble;
-                float sq      = sinf((float)TAU * f2 * t) >= 0 ? 1.0f : -1.0f;
-                float pulse   = ((int)(t * 16) % 2) ? 1.0f : -1.0f;
-                float glass   = sinf((float)TAU * 2100.0f * t) * expf(-chirp * 22.0f);
+                float sq      = sinf((float)TAU * f2 * tt) >= 0 ? 1.0f : -1.0f;
+                float pulse   = ((int)(tt * 16) % 2) ? 1.0f : -1.0f;
+                float glass   = sinf((float)TAU * 2100.0f * tt) * expf(-chirp * 22.0f);
                 float beep    = 0.72f * sq + 0.22f * pulse + 0.20f * glass;
                 float s       = tanhf(beep * env * 1.55f) * ramp;
                 if (s >  0.96f) s =  0.96f;
@@ -276,7 +281,7 @@ void play_alert_sound(App *app) {
     if (!job) { close(fd); return; }
     job->samples = NULL; job->n_samples = 0;
     job->fd_write = fd; job->active_flag = &app->alert_audio_active;
-    job->alert_ramp_seconds = 15.0f;
+    job->alert_ramp_seconds = 35.0f;
     pthread_t tid; pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
