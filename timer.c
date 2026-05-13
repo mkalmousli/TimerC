@@ -164,6 +164,8 @@ static void start_running(App *app) {
     clock_gettime(CLOCK_MONOTONIC, &app->start_ts);
     app->remaining_exact = (double)app->total_seconds;
     app->pause_total = 0.0;
+    app->tmr_last_draw_ms = 0;
+    app->tmr_force_redraw = 1;
 
     /* Use config window center so timer appears on the right monitor */
     if (app->cfg_win)
@@ -196,6 +198,7 @@ static void toggle_mini_fullscreen(App *app) {
     }
     app_log(app, "INFO", "Toggled to %s mode", app->mini ? "mini" : "fullscreen");
     create_timer_window(app);
+    app->tmr_force_redraw = 1;
     play_cue(app, app->mini ? "pause" : "resume");
 }
 
@@ -206,6 +209,7 @@ static void toggle_pause(App *app) {
         clock_gettime(CLOCK_MONOTONIC, &app->pause_start_ts);
         play_cue(app, "pause");
         app_log(app, "INFO", "Timer paused");
+        app->tmr_force_redraw = 1;
     } else if (app->state == STATE_PAUSED) {
         struct timespec now_ts;
         clock_gettime(CLOCK_MONOTONIC, &now_ts);
@@ -215,6 +219,7 @@ static void toggle_pause(App *app) {
         app->state = STATE_RUNNING;
         play_cue(app, "resume");
         app_log(app, "INFO", "Timer resumed");
+        app->tmr_force_redraw = 1;
     }
 }
 
@@ -294,7 +299,22 @@ static void do_timer_tick(App *app) {
             return;
         }
     }
-    draw_timer(app);
+
+    /* Drawing is the expensive part. Throttle redraws unless the value
+     * changed or an explicit redraw was requested. */
+    long draw_now_ms = now_ms;
+    int needs_draw = 0;
+    if (app->tmr_force_redraw) needs_draw = 1;
+    if (app->remaining_seconds != prev_rem) needs_draw = 1;
+
+    long min_interval = (app->state == STATE_RUNNING) ? TICK_TIMER_RUN_MS : TICK_TIMER_PAUSED_MS;
+    if (!needs_draw && (draw_now_ms - app->tmr_last_draw_ms) >= min_interval) needs_draw = 1;
+
+    if (needs_draw) {
+        draw_timer(app);
+        app->tmr_last_draw_ms = draw_now_ms;
+        app->tmr_force_redraw = 0;
+    }
 }
 
 /* ── Event handling ────────────────────────────────────── */
@@ -556,14 +576,22 @@ static void handle_event(App *app, XEvent *ev) {
 
 static void do_config_tick(App *app) {
     long now_ms = ms_now();
+    int blink_toggled = 0;
     /* Cursor blink every 530 ms */
     if (now_ms - app->cursor_blink_ts > 530) {
         app->cursor_blink = !app->cursor_blink;
         app->cursor_blink_ts = now_ms;
+        blink_toggled = 1;
     }
-    /* Redraw every tick so the live clock stays current */
-    if (app->cfg_win && app->state == STATE_CONFIG)
-        draw_config(app);
+
+    /* Redraw only when needed: cursor blink flips or wall-clock second changes. */
+    if (app->cfg_win && app->state == STATE_CONFIG) {
+        time_t wall = time(NULL);
+        int needs = 0;
+        if (wall != app->cfg_last_wall_sec) { app->cfg_last_wall_sec = wall; needs = 1; }
+        if (blink_toggled) needs = 1;
+        if (needs) draw_config(app);
+    }
 }
 
 /* ── Main event loop ───────────────────────────────────── */
@@ -571,10 +599,19 @@ static void do_config_tick(App *app) {
 static void main_loop(App *app) {
     int xfd = XConnectionNumber(app->dpy);
     while (app->state != STATE_DONE && !app->quit) {
-        XFlush(app->dpy);
+        /* Avoid a tight render loop: block in select() and only wake for events
+         * or a scheduled tick. */
         struct timeval tv;
-        tv.tv_sec  = TICK_MS / 1000;
-        tv.tv_usec = (TICK_MS % 1000) * 1000;
+        int tick_ms = 250;
+        switch (app->state) {
+        case STATE_CONFIG:  tick_ms = TICK_CONFIG_MS;        break;
+        case STATE_RUNNING: tick_ms = TICK_TIMER_RUN_MS;     break;
+        case STATE_PAUSED:  tick_ms = TICK_TIMER_PAUSED_MS;  break;
+        case STATE_ALERT:   tick_ms = TICK_ALERT_MS;         break;
+        default:            tick_ms = 250;                   break;
+        }
+        tv.tv_sec  = tick_ms / 1000;
+        tv.tv_usec = (tick_ms % 1000) * 1000;
         fd_set rfds; FD_ZERO(&rfds); FD_SET(xfd, &rfds);
         int nfds = select(xfd+1, &rfds, NULL, NULL, &tv);
         if (nfds < 0) { if (errno == EINTR) continue; break; }
@@ -622,6 +659,7 @@ static int app_init(App *app) {
     app->quote_idx = -1;
     app->quote_prev_idx = -1;
     app->quote_cycle_ts = 0;
+    app->cfg_last_wall_sec = 0;
 
     pthread_mutex_init(&app->audio_lock, NULL);
 

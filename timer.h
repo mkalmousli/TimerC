@@ -51,6 +51,12 @@
 #define MAX_MONITORS    8
 #define MAX_FONT_CACHE  64
 
+/* Tick pacing (lower = smoother, higher = lower CPU/GPU) */
+#define TICK_CONFIG_MS        200
+#define TICK_TIMER_RUN_MS     200
+#define TICK_TIMER_PAUSED_MS  500
+#define TICK_ALERT_MS          50
+
 /* Config window dimensions */
 #define CFG_W   500
 #define CFG_H   760
@@ -258,6 +264,11 @@ typedef struct {
     int        cue_half_played;
     int        cue_last3[3];
     int        prev_remaining;
+
+    /* Redraw pacing */
+    long       tmr_last_draw_ms;
+    int        tmr_force_redraw;
+    time_t     cfg_last_wall_sec;
 
     /* SQLite */
     sqlite3   *db;
