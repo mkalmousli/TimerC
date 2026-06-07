@@ -9,57 +9,65 @@
 /* ── Theme data ────────────────────────────────────────── */
 
 const Theme THEMES[N_THEMES] = {
-    { "Night Ember",
-      0x030403, 0x080907, 0x0c0d0a,
-      0xc7bda8, 0x756f62,
-      0xb48348, 0x2a2116,
-      0x241d13, 0x8a3430,
-      0x100c08, 0xb9915d, 0x342416,
-      0xc49a63, 0x080604,
-      0xb48348, 0x8a3430 },
-    { "Night Moss",
-      0x020504, 0x070b09, 0x0a100d,
-      0xb7c4b8, 0x667267,
-      0x6f9f73, 0x172218,
-      0x1b2b1e, 0x854039,
-      0x071008, 0x8db78f, 0x223725,
-      0x9ec49d, 0x030805,
-      0x6f9f73, 0x854039 },
-    { "Night Tide",
-      0x020507, 0x060b0e, 0x091014,
-      0xb2c0c0, 0x637072,
-      0x5d97a0, 0x111f23,
-      0x182c32, 0x813a38,
-      0x061015, 0x7fb0b8, 0x213d44,
-      0x8bbac1, 0x03080b,
-      0x5d97a0, 0x813a38 },
-    { "Night Plum",
-      0x040306, 0x0a080d, 0x0f0c14,
-      0xbdb4c5, 0x6d6574,
-      0x8a78a1, 0x1c1724,
-      0x292032, 0x803743,
-      0x0d0913, 0xa390bc, 0x342840,
-      0xad9ac4, 0x060409,
-      0x8a78a1, 0x803743 },
+    /* Forge — charcoal near-black, glowing hot-metal orange accent */
+    { "Forge",
+      0x070504, 0x110d08, 0x1a1510,
+      0xcdc0a8, 0x5a4e3c,
+      0xd06018, 0x251408,
+      0x2c1e0e, 0xc02818,
+      0x160e06, 0xc07840, 0x382010,
+      0xd07830, 0x060402,
+      0xd06018, 0x682808 },
+    /* Abyss — deep ocean near-black, electric cyan accent */
+    { "Abyss",
+      0x010508, 0x050c12, 0x081419,
+      0xa4bdc6, 0x344750,
+      0x1888a8, 0x061420,
+      0x0e2430, 0x7a2c38,
+      0x050c14, 0x50a0bc, 0x0e2840,
+      0x30b0d0, 0x010508,
+      0x28a8c8, 0x144060 },
+    /* Grove — forest floor near-black, warm moss-green accent */
+    { "Grove",
+      0x030502, 0x070d06, 0x0b1409,
+      0xa6bcaa, 0x445844,
+      0x689040, 0x101c08,
+      0x182a14, 0x8c3828,
+      0x070e06, 0x78b060, 0x183018,
+      0x88c070, 0x030502,
+      0x70b050, 0x384c20 },
+    /* Dusk — dark purple sky, soft violet accent */
+    { "Dusk",
+      0x040308, 0x0b0914, 0x110d1c,
+      0xb4aecb, 0x4c4460,
+      0x7055b8, 0x150c28,
+      0x221538, 0x903248,
+      0x090814, 0x9075c8, 0x281848,
+      0xa085d8, 0x030208,
+      0x8865c0, 0x401c60 },
 };
 
 static const char *QUOTES[] = {
-    "You have more in you. Use it.",
-    "Stay hungry, stay light.",
-    "Build the day you want.",
-    "Make one clean move now.",
-    "Let your effort lift you.",
-    "Small wins become momentum.",
-    "Want it calmly. Work for it.",
-    "You are closer than you think.",
-    "Turn hunger into steady proof.",
-    "Keep your head clear and move.",
-    "The work is waiting for you.",
-    "Be bold, but keep breathing.",
-    "Choose the next strong step.",
-    "Make today count without rushing.",
-    "Your future needs this version of you.",
-    "Quiet focus. Real progress.",
+    "Nobody cares. Deliver.",
+    "Your excuses are getting stronger. Are you?",
+    "Potential means nothing unpaid.",
+    "The mirror remembers every skipped day.",
+    "Weak habits create weak lives.",
+    "You don't need motivation. You need standards.",
+    "Comfort has already taken enough from you.",
+    "Every delay is a vote for failure.",
+    "Talk less. Produce more.",
+    "The goal doesn't care how you feel.",
+    "Your future is watching today's choices.",
+    "If it's important, prove it.",
+    "Quit waiting for perfect conditions.",
+    "You either train discipline or regret.",
+    "Nobody remembers almost.",
+    "The work is hard. So what?",
+    "You can suffer progress or suffer stagnation.",
+    "Results are the only argument.",
+    "Stop seeking permission.",
+    "Be the person your excuses fear.",
 };
 #define N_QUOTES ((int)(sizeof(QUOTES)/sizeof(QUOTES[0])))
 #define QUOTE_MORPH_MS   950
@@ -351,17 +359,12 @@ static void draw_quote_morph(App *app, XftDraw *draw, XftFont *font,
 }
 
 /* Render text stretched to exactly (area_w × area_h) via XRender bilinear scale */
-#if !LOW_POWER
 static void draw_text_stretched(App *app, Pixmap buf,
                                  int area_x, int area_y, int area_w, int area_h,
                                  XftFont *f, unsigned long col, unsigned long bg,
                                  const char *text) {
     if (!f || !text || !text[0] || area_w <= 0 || area_h <= 0) return;
-#if LOW_POWER
-    (void)app; (void)buf; (void)area_x; (void)area_y; (void)area_w; (void)area_h;
-    (void)f; (void)col; (void)bg; (void)text;
-    return;
-#else
+
     int src_w = text_width(app, f, text);
     int src_h = f->ascent + f->descent;
     if (src_w <= 0 || src_h <= 0) return;
@@ -396,9 +399,7 @@ static void draw_text_stretched(App *app, Pixmap buf,
         XCopyArea(app->dpy, src, buf, app->gc, 0, 0, src_w, src_h, dx, dy);
     }
     XFreePixmap(app->dpy, src);
-#endif
 }
-#endif
 
 /* ── Theme / display-color helpers ────────────────────── */
 
@@ -458,19 +459,47 @@ static unsigned long timer_display_color(App *app) {
 #endif
 }
 
+/* Beat-synced strobe: the screen slams a vivid color on every alarm
+ * strike and decays toward black before the next one, so the flashing
+ * dances in time with the sound.  A white-hot transient marks the exact
+ * strike, and the palette rotates each period for ever-changing colors. */
 static unsigned long alert_strobe_color(double elapsed, int frame) {
-    static const unsigned long pal[] =
-        { 0x000000, 0xffffff, 0xff0000, 0xffff00, 0xff00ff, 0x00ffff, 0x0000ff };
-    double chirp = fmod(elapsed, 0.20);
-    int warble = (int)(elapsed * 12) % 2;
-    int pulse  = (int)(elapsed * 16) % 2;
-    int burst  = chirp < 0.145;
-    if (!burst) return (frame%2 == 0) ? 0x000000UL : 0x220000UL;
-    if (chirp < 0.020) return 0xffffffUL;
-    if (chirp > 0.115) return pulse ? 0xff0000UL : 0xffff00UL;
-    int aframe = (int)(chirp * 1000.0 / 16.0);
-    int idx = (frame*5 + (int)(elapsed*37) + warble*3 + pulse*2 + aframe) % 7;
-    return pal[idx];
+    (void)frame;
+    static const float onset[ALARM_N] = ALARM_ONSETS;
+    static const unsigned long pal[ALARM_N] = {
+        0xff1040, 0xff8000, 0xffe000, 0x20ff50, 0x00c0ff, 0xb030ff
+    };
+    /* Once the alarm auto-mutes, the flashing stops too: hold a calm dim. */
+    if (elapsed > ALARM_MAX_SECONDS) return 0x0a0a0eUL;
+
+    /* Sound is heard a touch after it is generated; nudge the visuals
+     * back slightly so the flash lands on the audible beat. */
+    double e = elapsed - 0.08;
+    if (e < 0.0) e = 0.0;
+
+    /* Follow the same accelerating phase as the audio so the flashes stay
+     * locked to the (speeding-up) beat. */
+    double ph     = alarm_phase(e);
+    double persec = 1.0 / alarm_speed(e);
+    double fp     = ph - floor(ph);
+    int    period = (int)floor(ph);
+
+    /* Most recent strike: largest onset fraction not after the position. */
+    int idx = 0;
+    for (int j = 0; j < ALARM_N; j++)
+        if ((double)onset[j] / ALARM_PERIOD <= fp) idx = j;
+    double dt = (fp - (double)onset[idx] / ALARM_PERIOD) * persec;
+
+    /* White-hot transient right on the strike. */
+    if (dt < 0.022) return 0xffffffUL;
+
+    /* Vivid color, decaying toward black until the next strike. */
+    unsigned long c = pal[(idx + period) % ALARM_N];
+    double env = exp(-dt * 6.5);
+    int r = (int)(((c >> 16) & 0xff) * env);
+    int g = (int)(((c >>  8) & 0xff) * env);
+    int b = (int)(( c        & 0xff) * env);
+    return ((unsigned long)r << 16) | ((unsigned long)g << 8) | (unsigned long)b;
 }
 
 /* ── Double-buffer management ──────────────────────────── */
@@ -614,9 +643,18 @@ void draw_config(App *app) {
         double mins_f  = tm_info->tm_min  + secs_f  / 60.0;
         double hours_f = (tm_info->tm_hour % 12) + mins_f / 60.0;
 
+        /* Second hand: a refined sweep. Mostly continuous, with a gentle
+         * smootherstep blended in so each second glides — softly easing in
+         * and settling — for a luxurious mechanical feel rather than a tick. */
+        double whole = floor(secs_f);
+        double frac  = secs_f - whole;
+        double eased = frac * frac * frac * (frac * (frac * 6.0 - 15.0) + 10.0);
+        double sweep = 0.30 * eased + 0.70 * frac;   /* 0=full ease, 1=linear */
+        double secs_smooth = whole + sweep;
+
         double ang_h = hours_f * TAU / 12.0;
         double ang_m = mins_f  * TAU / 60.0;
-        double ang_s = secs_f  * TAU / 60.0;
+        double ang_s = secs_smooth * TAU / 60.0;
 
         int r = logo_r, lx = W / 2, lcy = ly;
 
@@ -960,9 +998,6 @@ void draw_timer_mini(App *app) {
         int cd_y = y + pad;
         int cd_w = cw;
         int cd_h = cy2 - pad - cd_y;
-#if LOW_POWER
-        (void)cd_x;
-#endif
 
         char time_str[16];
         format_time(app->remaining_seconds, time_str, sizeof(time_str));
@@ -983,14 +1018,8 @@ void draw_timer_mini(App *app) {
             }
             XftFont *f = get_font(app, app->cd_font_sz, 3);
             if (f && show) {
-#if LOW_POWER
-                xft_draw_string_centered(app, draw, f, timer_display_color(app),
-                                         W / 2, cd_y + (cd_h - (f->ascent + f->descent)) / 2 + f->ascent,
-                                         time_str);
-#else
                 draw_text_stretched(app, buf, cd_x, cd_y, cd_w, cd_h,
                                     f, timer_display_color(app), th->bg, time_str);
-#endif
             }
             if (app->state == STATE_PAUSED) {
                 int psz = scaled(H / 12, 6, 10);
@@ -1091,9 +1120,6 @@ static void draw_timer_fullscreen(App *app) {
         int cd_y  = top + pad;
         int cd_w  = W - h_margin * 2 - pad * 2;
         int cd_h  = bottom - top - pause_rsv - pad * 2;
-#if LOW_POWER
-        (void)cd_x;
-#endif
 
         int show = (app->state != STATE_PAUSED) ||
                    ((int)(monotonic_now() * 2) % 2 == 0);
@@ -1111,14 +1137,8 @@ static void draw_timer_fullscreen(App *app) {
             }
             XftFont *f = get_font(app, app->cd_font_sz, 3);
             if (f && show) {
-#if LOW_POWER
-                xft_draw_string_centered(app, draw, f, timer_display_color(app),
-                                         W / 2, cd_y + (cd_h - (f->ascent + f->descent)) / 2 + f->ascent,
-                                         time_str);
-#else
                 draw_text_stretched(app, buf, cd_x, cd_y, cd_w, cd_h,
                                     f, timer_display_color(app), th->bg, time_str);
-#endif
             }
         }
     }
@@ -1328,6 +1348,15 @@ void draw_alert(App *app) {
     clock_gettime(CLOCK_MONOTONIC, &now_ts);
     double elapsed = (now_ts.tv_sec  - app->alert_start_ts.tv_sec) +
                      (now_ts.tv_nsec - app->alert_start_ts.tv_nsec) * 1e-9;
+
+    /* Auto-mute the alarm after 10 minutes if the user never stops it.
+     * Clearing the flag stops the streaming synth; kill_all_audio stops
+     * the player.  The alert window stays up, but silent. */
+    if (elapsed > ALARM_MAX_SECONDS && app->alert_audio_active) {
+        app->alert_audio_active = 0;
+        kill_all_audio(app);
+    }
+
     app->alert_frame++;
     unsigned long bg_rgb = alert_strobe_color(elapsed, app->alert_frame);
     int r2 = (bg_rgb>>16)&0xff, g2 = (bg_rgb>>8)&0xff, b2 = bg_rgb&0xff;

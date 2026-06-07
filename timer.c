@@ -142,6 +142,7 @@ static void do_quit(App *app) {
 
 static void dismiss_alert(App *app) {
     app_log(app, "INFO", "Alert dismissed");
+    db_log_event(app, "alert_dismiss", NULL);
     app->alert_audio_active = 0;
     kill_all_audio(app);   /* stop the looping alert siren immediately */
     play_cue(app, "dismiss");
@@ -151,6 +152,7 @@ static void dismiss_alert(App *app) {
 
 static void stop_timer(App *app) {
     app_log(app, "INFO", "Timer stopped by user");
+    db_log_event(app, "timer_stop", NULL);
     play_cue(app, "stop");
     db_finish_session(app, "stopped");
     do_quit(app);
@@ -173,6 +175,13 @@ static void start_running(App *app) {
 
     create_timer_window(app);
     db_start_session(app);
+    {
+        char det[512];
+        snprintf(det, sizeof(det), "duration=%ds task=%.200s mode=%s",
+                 app->total_seconds, app->task,
+                 app->mode == MODE_SHUTDOWN ? "shutdown" : "alert");
+        db_log_event(app, "timer_start", det);
+    }
     app_log(app, "INFO", "Timer started: %ds, task='%s', mode=%s, mini=%d",
             app->total_seconds, app->task,
             app->mode == MODE_SHUTDOWN ? "shutdown" : "alert", app->mini);
@@ -197,6 +206,7 @@ static void toggle_mini_fullscreen(App *app) {
         app->mini = 1;
     }
     app_log(app, "INFO", "Toggled to %s mode", app->mini ? "mini" : "fullscreen");
+    db_log_event(app, "window_toggle", app->mini ? "mini" : "fullscreen");
     create_timer_window(app);
     app->tmr_force_redraw = 1;
     play_cue(app, app->mini ? "pause" : "resume");
@@ -208,6 +218,7 @@ static void toggle_pause(App *app) {
         app->state = STATE_PAUSED;
         clock_gettime(CLOCK_MONOTONIC, &app->pause_start_ts);
         play_cue(app, "pause");
+        db_log_event(app, "timer_pause", NULL);
         app_log(app, "INFO", "Timer paused");
         app->tmr_force_redraw = 1;
     } else if (app->state == STATE_PAUSED) {
@@ -218,6 +229,7 @@ static void toggle_pause(App *app) {
         app->pause_total += p;
         app->state = STATE_RUNNING;
         play_cue(app, "resume");
+        db_log_event(app, "timer_resume", NULL);
         app_log(app, "INFO", "Timer resumed");
         app->tmr_force_redraw = 1;
     }
@@ -233,6 +245,7 @@ static void timer_finished(App *app) {
     destroy_timer_window(app);
 
     if (app->mode == MODE_SHUTDOWN) {
+        db_log_event(app, "shutdown_trigger", NULL);
         play_cue(app, "stop");
         db_finish_session(app, "completed");
         app_log(app, "WARN", "Initiating system shutdown");
@@ -241,6 +254,7 @@ static void timer_finished(App *app) {
         run_cmd_shutdown("systemctl poweroff");
         do_quit(app);
     } else {
+        db_log_event(app, "alert_open", NULL);
         play_cue(app, "alert_open");
         create_alert_windows(app);
         app->state = STATE_ALERT;
@@ -256,6 +270,7 @@ static void maybe_play_cues(App *app, int prev_rem) {
         int half = app->total_seconds / 2;
         if (prev_rem > half && app->remaining_seconds <= half) {
             app->cue_half_played = 1;
+            db_log_event(app, "half_point", NULL);
             play_cue(app, "half");
         }
     }
@@ -263,6 +278,8 @@ static void maybe_play_cues(App *app, int prev_rem) {
         int s = 3 - i;
         if (!app->cue_last3[i] && prev_rem > s && app->remaining_seconds <= s) {
             app->cue_last3[i] = 1;
+            char det[8]; snprintf(det, sizeof(det), "%ds", s);
+            db_log_event(app, "last_3s", det);
             play_cue(app, "last");
         }
     }
@@ -329,6 +346,7 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
         ((ev->state & ControlMask) && (ks == XK_t || ks == XK_T))) {
         app->theme_idx = (app->theme_idx + 1) % N_THEMES;
         app_log(app, "INFO", "Theme: %s", THEMES[app->theme_idx].name);
+        db_log_event(app, "theme_change", THEMES[app->theme_idx].name);
         play_cue(app, "resume");
         draw_config(app);
         return;
@@ -576,22 +594,16 @@ static void handle_event(App *app, XEvent *ev) {
 
 static void do_config_tick(App *app) {
     long now_ms = ms_now();
-    int blink_toggled = 0;
     /* Cursor blink every 530 ms */
     if (now_ms - app->cursor_blink_ts > 530) {
         app->cursor_blink = !app->cursor_blink;
         app->cursor_blink_ts = now_ms;
-        blink_toggled = 1;
     }
 
-    /* Redraw only when needed: cursor blink flips or wall-clock second changes. */
-    if (app->cfg_win && app->state == STATE_CONFIG) {
-        time_t wall = time(NULL);
-        int needs = 0;
-        if (wall != app->cfg_last_wall_sec) { app->cfg_last_wall_sec = wall; needs = 1; }
-        if (blink_toggled) needs = 1;
-        if (needs) draw_config(app);
-    }
+    /* Redraw every tick (~60fps) so the analog clock hands sweep smoothly
+     * and the quote cross-fade animates fluidly. */
+    if (app->cfg_win && app->state == STATE_CONFIG)
+        draw_config(app);
 }
 
 /* ── Main event loop ───────────────────────────────────── */
@@ -604,7 +616,7 @@ static void main_loop(App *app) {
         struct timeval tv;
         int tick_ms = 250;
         switch (app->state) {
-        case STATE_CONFIG:  tick_ms = TICK_CONFIG_MS;        break;
+        case STATE_CONFIG:  tick_ms = TICK_CONFIG_ANIM_MS;   break;
         case STATE_RUNNING:
             tick_ms = (app->remaining_seconds <= 10) ? TICK_TIMER_LAST10_MS : TICK_TIMER_RUN_MS;
             break;
@@ -645,9 +657,9 @@ static int app_init(App *app) {
     char data_dir[MAX_PATH_LEN-16];
     snprintf(data_dir, sizeof(data_dir), "%s/.local/share/timer_c", home);
     mkdir(data_dir, 0755);
-    snprintf(app->log_path, sizeof(app->log_path), "%s/timer.log",    data_dir);
-    snprintf(app->db_path,  sizeof(app->db_path),  "%s/sessions.db",  data_dir);
+    snprintf(app->log_path, sizeof(app->log_path), "%s/timer.log", data_dir);
     app->logfp = fopen(app->log_path, "a");
+    /* app->db_path is resolved by db_init() to sit next to the binary */
 
     app->theme_idx  = rand() % N_THEMES;
     app->cfg_focused = 1;
@@ -691,6 +703,7 @@ static int app_init(App *app) {
     app->mon_h = DisplayHeight(app->dpy, app->screen);
 
     db_init(app);
+    db_log_event(app, "app_launch", NULL);
 
     g_app = app;
     signal(SIGINT,  signal_handler);

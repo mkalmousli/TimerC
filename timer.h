@@ -58,10 +58,31 @@
 
 /* Tick pacing (lower = smoother, higher = lower CPU/GPU) */
 #define TICK_CONFIG_MS        500
+/* Config view animates the analog clock + quote morph; redraw at ~60fps
+ * so the hands sweep continuously instead of jumping each second. */
+#define TICK_CONFIG_ANIM_MS    16
 #define TICK_TIMER_RUN_MS    1000
 #define TICK_TIMER_LAST10_MS  100
 #define TICK_TIMER_PAUSED_MS 1000
-#define TICK_ALERT_MS          50
+#define TICK_ALERT_MS          16   /* ~60fps so the beat-synced strobe is crisp */
+
+/* Alarm rhythm — shared between audio.c (note synthesis) and draw.c (the
+ * alert window flashes a color on each strike, in time with the sound).
+ * Onsets are seconds-into-period for the six notes of the motif. */
+#define ALARM_PERIOD  2.4f
+#define ALARM_N       6
+#define ALARM_ONSETS  { 0.00f, 0.40f, 0.80f, 1.20f, 1.65f, 2.05f }
+
+/* The motif accelerates over time, growing more frantic and aggressive.
+ * Speed (periods/sec) rises linearly until the period bottoms out. */
+#define ALARM_ACCEL       0.06    /* rate increase per second of alerting */
+#define ALARM_PERIOD_MIN  0.80    /* fastest (shortest) period, seconds   */
+
+/* Aggression (grit/brightness/level) ramps from 0→1 over this many seconds. */
+#define ALARM_AGGRO_SECS  90.0
+
+/* Auto-mute the alarm after this long if the user never stops it. */
+#define ALARM_MAX_SECONDS 600.0   /* 10 minutes */
 
 /* Config window dimensions */
 #define CFG_W   500
@@ -312,6 +333,29 @@ static inline long ms_now(void) {
     return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
 }
 
+/* ── Alarm tempo (shared by audio synthesis and the alert strobe) ──
+ * The motif plays faster as the alert goes on.  alarm_speed() is the
+ * instantaneous tempo in periods/second; alarm_phase() is its integral,
+ * giving a continuous musical phase in "periods" so the audio beat and
+ * the visual flashes stay perfectly locked as the tempo changes. */
+static inline double alarm_speed(double t) {
+    double s0   = 1.0 / ALARM_PERIOD;
+    double smax = 1.0 / ALARM_PERIOD_MIN;
+    double s    = s0 * (1.0 + ALARM_ACCEL * t);
+    return s > smax ? smax : s;
+}
+
+static inline double alarm_phase(double t) {
+    if (t < 0.0) t = 0.0;
+    double s0   = 1.0 / ALARM_PERIOD;
+    double smax = 1.0 / ALARM_PERIOD_MIN;
+    double tc   = (smax / s0 - 1.0) / ALARM_ACCEL;   /* time speed hits the cap */
+    if (t <= tc)
+        return s0 * (t + 0.5 * ALARM_ACCEL * t * t);
+    double phase_tc = s0 * (tc + 0.5 * ALARM_ACCEL * tc * tc);
+    return phase_tc + smax * (t - tc);
+}
+
 /* ── Function prototypes ───────────────────────────────── */
 
 /* timer.c */
@@ -334,6 +378,7 @@ void kill_all_audio(App *app);
 void db_init(App *app);
 void db_start_session(App *app);
 void db_finish_session(App *app, const char *status);
+void db_log_event(App *app, const char *event, const char *detail);
 
 /* draw.c */
 void draw_config(App *app);
