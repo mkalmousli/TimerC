@@ -42,7 +42,7 @@
 
 /* ── Constants ─────────────────────────────────────────── */
 
-#define APP_NAME        "timer_c"
+#define APP_NAME        "Timer In Pure C"
 #define APP_MAX_INPUT   512
 #define MAX_TASK        256
 #define MAX_UNTIL       16
@@ -78,11 +78,11 @@
 #define ALARM_ACCEL       0.06    /* rate increase per second of alerting */
 #define ALARM_PERIOD_MIN  0.80    /* fastest (shortest) period, seconds   */
 
-/* Aggression (grit/brightness/level) ramps from 0→1 over this many seconds. */
-#define ALARM_AGGRO_SECS  90.0
+/* Brightness/level build ramps from 0→1 over this many seconds. */
+#define ALARM_AGGRO_SECS  80.0
 
 /* Auto-mute the alarm after this long if the user never stops it. */
-#define ALARM_MAX_SECONDS 600.0   /* 10 minutes */
+#define ALARM_MAX_SECONDS 120.0   /* 5 minutes */
 
 /* Config window dimensions */
 #define CFG_W   500
@@ -134,10 +134,19 @@ typedef struct {
 
 /* ── Audio job ─────────────────────────────────────────── */
 
+#define MAX_AUDIO_OUTPUTS 16
+#define MAX_AUDIO_PIDS    32
+
+typedef struct {
+    int   fd;
+    pid_t pid;
+} AudioOutput;
+
 typedef struct {
     int16_t        *samples;
     int             n_samples;
-    int             fd_write;
+    AudioOutput     outputs[MAX_AUDIO_OUTPUTS];
+    int             n_outputs;
     volatile int   *active_flag;
     float           alert_ramp_seconds;
 } AudioJob;
@@ -241,6 +250,13 @@ typedef struct {
     int        quote_prev_idx;
     long       quote_cycle_ts;
 
+    /* Config preview cache (parse once per keystroke, not per frame) */
+    ParseResult cfg_preview;
+    int         cfg_layout_sig;
+    int         cfg_anim_top, cfg_anim_h;
+    int         cfg_panel_top, cfg_panel_h;
+    long        cfg_anim_last_ms;
+
     /* Task / until */
     char       task[MAX_TASK];
     char       until_str[MAX_UNTIL];
@@ -291,7 +307,7 @@ typedef struct {
 
     /* Audio */
     volatile int    alert_audio_active;
-    pid_t           audio_pids[8];
+    pid_t           audio_pids[MAX_AUDIO_PIDS];
     int             n_audio_pids;
     pthread_mutex_t audio_lock;
 
@@ -381,7 +397,12 @@ void db_finish_session(App *app, const char *status);
 void db_log_event(App *app, const char *event, const char *detail);
 
 /* draw.c */
+void cfg_refresh_preview(App *app);
+void cfg_update_layout(App *app);
 void draw_config(App *app);
+void draw_config_anim(App *app);
+void draw_config_panel(App *app);
+void cfg_redraw_after_input(App *app);
 void draw_timer(App *app);
 void draw_alert(App *app);
 void create_config_window(App *app);

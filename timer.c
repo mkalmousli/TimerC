@@ -345,16 +345,13 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
     if (ks == XK_Tab ||
         ((ev->state & ControlMask) && (ks == XK_t || ks == XK_T))) {
         app->theme_idx = (app->theme_idx + 1) % N_THEMES;
-        app_log(app, "INFO", "Theme: %s", THEMES[app->theme_idx].name);
-        db_log_event(app, "theme_change", THEMES[app->theme_idx].name);
-        play_cue(app, "resume");
         draw_config(app);
         return;
     }
     if ((ev->state & ControlMask) && (ks == XK_a || ks == XK_A)) {
         app->cursor_pos = app->input_len;
         app->cursor_blink = 1; app->cursor_blink_ts = ms_now();
-        draw_config(app); return;
+        cfg_redraw_after_input(app); return;
     }
 
     if (ks == XK_Escape) {
@@ -411,7 +408,7 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
         }
     }
     app->cursor_blink = 1; app->cursor_blink_ts = ms_now();
-    draw_config(app);
+    cfg_redraw_after_input(app);
 }
 
 static void handle_event(App *app, XEvent *ev) {
@@ -594,16 +591,31 @@ static void handle_event(App *app, XEvent *ev) {
 
 static void do_config_tick(App *app) {
     long now_ms = ms_now();
-    /* Cursor blink every 530 ms */
+    int blink_changed = 0;
     if (now_ms - app->cursor_blink_ts > 530) {
         app->cursor_blink = !app->cursor_blink;
         app->cursor_blink_ts = now_ms;
+        blink_changed = 1;
     }
 
-    /* Redraw every tick (~60fps) so the analog clock hands sweep smoothly
-     * and the quote cross-fade animates fluidly. */
-    if (app->cfg_win && app->state == STATE_CONFIG)
-        draw_config(app);
+    if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
+    if (now_ms - app->cfg_anim_last_ms >= 33) {
+        if (app->cfg_win && app->state == STATE_CONFIG)
+            draw_config_anim(app);
+        app->cfg_anim_last_ms = now_ms;
+    } else if (blink_changed && app->cfg_win && app->state == STATE_CONFIG) {
+        draw_config_panel(app);
+    }
+
+    /* Live until-countdown preview — reparse once per wall-clock second. */
+    if (app->cfg_win && app->state == STATE_CONFIG && app->cfg_preview.until[0]) {
+        time_t ws = time(NULL);
+        if (ws != app->cfg_last_wall_sec) {
+            app->cfg_last_wall_sec = ws;
+            cfg_refresh_preview(app);
+            draw_config_panel(app);
+        }
+    }
 }
 
 /* ── Main event loop ───────────────────────────────────── */
