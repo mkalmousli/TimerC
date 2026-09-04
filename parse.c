@@ -34,7 +34,9 @@ static int extract_switches(const char *s, char *remainder, int rem_sz,
     return 1;
 }
 
-/* Parse "u15:30", "u1520", "u15" → seconds until HH:MM */
+/* Parse "u15:30", "u1520", "u15" → seconds until HH:MM.
+ * Also "u:30" — hour omitted, colon still present — means "at minute 30
+ * of the current hour, or the next hour if that's already past". */
 static int parse_until(const char *s, ParseResult *out) {
     if (tolower((unsigned char)s[0]) != 'u') return 0;
     const char *p = s + 1;
@@ -49,9 +51,12 @@ static int parse_until(const char *s, ParseResult *out) {
         while (*p && isdigit((unsigned char)*p) && aci < 2) ac[aci++] = *p++;
         ac[aci] = '\0';
     }
-    if (di == 0) return 0;
+    int hour_omitted = (di == 0 && colon && aci > 0);
+    if (di == 0 && !hour_omitted) return 0;
 
-    if (colon) {
+    if (hour_omitted) {
+        mm = atoi(ac);
+    } else if (colon) {
         hh = atoi(digits); mm = aci > 0 ? atoi(ac) : 0;
     } else {
         int val = atoi(digits);
@@ -59,17 +64,31 @@ static int parse_until(const char *s, ParseResult *out) {
         else if (di == 3) { hh = digits[0]-'0'; mm = atoi(digits+1); }
         else              { hh = atoi(digits)/100; mm = atoi(digits)%100; }
     }
-    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return 0;
+    if (mm < 0 || mm > 59) return 0;
+    if (!hour_omitted && (hh < 0 || hh > 23)) return 0;
 
     time_t now_t = time(NULL);
     struct tm *lt = localtime(&now_t);
     struct tm target = *lt;
+    if (hour_omitted) hh = lt->tm_hour;
     target.tm_hour = hh; target.tm_min = mm; target.tm_sec = 0;
     time_t target_t = mktime(&target);
-    if (target_t <= now_t) target_t += 86400;
+    if (target_t <= now_t) {
+        /* Hour was given explicitly: same time tomorrow. Hour omitted
+         * ("u:30"): just roll to the next hour at that minute. */
+        if (hour_omitted) {
+            target.tm_hour += 1;
+            target_t = mktime(&target);
+        } else {
+            target_t += 86400;
+        }
+    }
 
     int secs = (int)(target_t - now_t);
     if (secs <= 0) return 0;
+
+    struct tm *rt = localtime(&target_t);
+    hh = rt->tm_hour; mm = rt->tm_min;
 
     out->seconds = secs;
     snprintf(out->until, sizeof(out->until), "%02d:%02d", hh, mm);

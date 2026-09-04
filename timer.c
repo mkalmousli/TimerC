@@ -134,6 +134,7 @@ static void do_quit(App *app) {
     destroy_timer_window(app);
     if (app->cfg_buf_xft) { XftDrawDestroy(app->cfg_buf_xft); app->cfg_buf_xft = NULL; }
     if (app->cfg_buf)     { XFreePixmap(app->dpy, app->cfg_buf); app->cfg_buf = 0; }
+    draw_release_quote_cache(app);
     if (app->cfg_xft)     { XftDrawDestroy(app->cfg_xft); app->cfg_xft = NULL; }
     if (app->cfg_win)     { XDestroyWindow(app->dpy, app->cfg_win); app->cfg_win = 0; }
     XFlush(app->dpy);
@@ -171,7 +172,7 @@ static void start_running(App *app) {
 
     /* Use config window center so timer appears on the right monitor */
     if (app->cfg_win)
-        detect_monitor(app, app->cfg_x + CFG_W/2, app->cfg_y + CFG_H/2);
+        detect_monitor(app, app->cfg_x + g_config.cfg_w/2, app->cfg_y + g_config.cfg_h/2);
 
     create_timer_window(app);
     db_start_session(app);
@@ -324,7 +325,7 @@ static void do_timer_tick(App *app) {
     if (app->tmr_force_redraw) needs_draw = 1;
     if (app->remaining_seconds != prev_rem) needs_draw = 1;
 
-    long min_interval = (app->state == STATE_RUNNING) ? TICK_TIMER_RUN_MS : TICK_TIMER_PAUSED_MS;
+    long min_interval = (app->state == STATE_RUNNING) ? g_config.tick_run_ms : g_config.tick_paused_ms;
     if (!needs_draw && (draw_now_ms - app->tmr_last_draw_ms) >= min_interval) needs_draw = 1;
 
     if (needs_draw) {
@@ -336,10 +337,55 @@ static void do_timer_tick(App *app) {
 
 /* ── Event handling ────────────────────────────────────── */
 
+static void drain_motion(App *app, XEvent *ev, int *rx, int *ry) {
+    *rx = ev->xmotion.x_root;
+    *ry = ev->xmotion.y_root;
+    XEvent n;
+    while (XCheckTypedEvent(app->dpy, MotionNotify, &n)) {
+        *rx = n.xmotion.x_root;
+        *ry = n.xmotion.y_root;
+    }
+}
+
 static void handle_config_key(App *app, XKeyEvent *ev) {
     char buf[32] = "";
     KeySym ks;
     XLookupString(ev, buf, sizeof(buf)-1, &ks, NULL);
+
+    if (app->insights_open) {
+        ins_handle_key(app, ev);
+        return;
+    }
+
+    /* Ctrl+H opens the keybinding help overlay (closed again the same way
+     * Ctrl+I's data browser is: from inside the dispatch above once
+     * help_open is set, never as a toggle in this branch). */
+    if (app->help_open) {
+        if (ks == XK_Escape ||
+            ((ev->state & ControlMask) && (ks == XK_h || ks == XK_H))) {
+            app->help_open = 0;
+            draw_config(app);
+        }
+        return;
+    }
+    if ((ev->state & ControlMask) && (ks == XK_h || ks == XK_H)) {
+        app->help_open = 1;
+        draw_config(app);
+        return;
+    }
+
+    /* Ctrl+I opens the data browser */
+    if ((ev->state & ControlMask) && (ks == XK_i || ks == XK_I)) {
+        ins_enter(app);
+        app->ins_day_offset = 0;
+        app->ins_sel = 0;
+        app->ins_sess_scroll = 0;
+        app->ins_evt_scroll = 0;
+        db_insights_load_day(app, 0);
+        db_log_event(app, "insights_open", NULL);
+        draw_insights(app);
+        return;
+    }
 
     /* Tab (or Ctrl+T) cycles through themes */
     if (ks == XK_Tab ||
@@ -451,6 +497,10 @@ static void handle_event(App *app, XEvent *ev) {
             /* Explicitly restore keyboard focus — override_redirect windows do
              * not receive it automatically when another window takes it. */
             XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
+            if (app->insights_open &&
+                ev->xbutton.button == Button1 &&
+                ins_handle_click(app, ev->xbutton.x, ev->xbutton.y))
+                break;
             if (ev->xbutton.button == Button2) {
                 play_cue(app, "close");
                 do_quit(app);
@@ -459,18 +509,27 @@ static void handle_event(App *app, XEvent *ev) {
                 app->cfg_is_dragging = 1;
                 app->cfg_drag_px = ev->xbutton.x_root; app->cfg_drag_py = ev->xbutton.y_root;
                 app->cfg_drag_wx = app->cfg_x;          app->cfg_drag_wy = app->cfg_y;
+                XGrabPointer(app->dpy, app->cfg_win, True,
+                             PointerMotionMask | ButtonReleaseMask,
+                             GrabModeAsync, GrabModeAsync,
+                             app->cfg_win, None, CurrentTime);
             } else if (ev->xbutton.button == Button3) {
                 app->fullscreen_requested = 1; app->mini = 0;
             }
             break;
-        case ButtonRelease: app->cfg_is_dragging = 0; break;
+        case ButtonRelease:
+            if (app->cfg_is_dragging)
+                XUngrabPointer(app->dpy, CurrentTime);
+            app->cfg_is_dragging = 0;
+            break;
         case MotionNotify:
             if (app->cfg_is_dragging) {
-                int dx = ev->xmotion.x_root - app->cfg_drag_px;
-                int dy = ev->xmotion.y_root - app->cfg_drag_py;
-                app->cfg_x = app->cfg_drag_wx + dx;
-                app->cfg_y = app->cfg_drag_wy + dy;
+                int rx, ry;
+                drain_motion(app, ev, &rx, &ry);
+                app->cfg_x = app->cfg_drag_wx + (rx - app->cfg_drag_px);
+                app->cfg_y = app->cfg_drag_wy + (ry - app->cfg_drag_py);
                 XMoveWindow(app->dpy, app->cfg_win, app->cfg_x, app->cfg_y);
+                XFlush(app->dpy);
             }
             break;
         case ClientMessage:
@@ -500,7 +559,7 @@ static void handle_event(App *app, XEvent *ev) {
             if (ev->xbutton.button == Button3) { toggle_mini_fullscreen(app); return; }
             if (ev->xbutton.button == Button1) {
                 if (app->mini) {
-                    if (bx >= app->tmr_w - RESIZE_ZONE && by >= app->tmr_h - RESIZE_ZONE) {
+                    if (bx >= app->tmr_w - g_config.resize_zone && by >= app->tmr_h - g_config.resize_zone) {
                         app->is_resizing = 1;
                         app->resize_px = ev->xbutton.x_root; app->resize_py = ev->xbutton.y_root;
                         app->resize_wx = app->tmr_x;         app->resize_wy = app->tmr_y;
@@ -512,27 +571,37 @@ static void handle_event(App *app, XEvent *ev) {
                 app->is_dragging = 1;
                 app->drag_px = ev->xbutton.x_root; app->drag_py = ev->xbutton.y_root;
                 app->drag_wx = app->tmr_x;          app->drag_wy = app->tmr_y;
+                app->drag_grabbed = 1;
+                XGrabPointer(app->dpy, app->tmr_win, True,
+                             PointerMotionMask | ButtonReleaseMask,
+                             GrabModeAsync, GrabModeAsync,
+                             app->tmr_win, None, CurrentTime);
             }
             break;
         }
         case ButtonRelease:
+            if (app->drag_grabbed) {
+                XUngrabPointer(app->dpy, CurrentTime);
+                app->drag_grabbed = 0;
+            }
             app->is_dragging = 0;
             app->is_resizing = 0;
             break;
         case MotionNotify:
             if (app->is_dragging && app->mini) {
-                int dx = ev->xmotion.x_root - app->drag_px;
-                int dy = ev->xmotion.y_root - app->drag_py;
-                app->tmr_x = app->drag_wx + dx;
-                app->tmr_y = app->drag_wy + dy;
+                int rx, ry;
+                drain_motion(app, ev, &rx, &ry);
+                app->tmr_x = app->drag_wx + (rx - app->drag_px);
+                app->tmr_y = app->drag_wy + (ry - app->drag_py);
                 XMoveWindow(app->dpy, app->tmr_win, app->tmr_x, app->tmr_y);
+                XFlush(app->dpy);
             } else if (app->is_resizing && app->mini) {
                 int dx = ev->xmotion.x_root - app->resize_px;
                 int dy = ev->xmotion.y_root - app->resize_py;
                 int nw = app->resize_ww + dx;
                 int nh = app->resize_wh + dy;
-                if (nw < MINI_W_MIN) nw = MINI_W_MIN;
-                if (nh < MINI_H_MIN) nh = MINI_H_MIN;
+                if (nw < g_config.mini_w_min) nw = g_config.mini_w_min;
+                if (nh < g_config.mini_h_min) nh = g_config.mini_h_min;
                 if (nw != app->tmr_w || nh != app->tmr_h) {
                     app->tmr_w = nw; app->tmr_h = nh;
                     XResizeWindow(app->dpy, app->tmr_win, nw, nh);
@@ -549,8 +618,8 @@ static void handle_event(App *app, XEvent *ev) {
                     }
                 }
             } else if (app->mini) {
-                int in_zone = (ev->xmotion.x >= app->tmr_w - RESIZE_ZONE &&
-                               ev->xmotion.y >= app->tmr_h - RESIZE_ZONE);
+                int in_zone = (ev->xmotion.x >= app->tmr_w - g_config.resize_zone &&
+                               ev->xmotion.y >= app->tmr_h - g_config.resize_zone);
                 if (in_zone && !app->cursor_in_resize) {
                     XDefineCursor(app->dpy, app->tmr_win, app->cursor_resize);
                     app->cursor_in_resize = 1;
@@ -591,20 +660,37 @@ static void handle_event(App *app, XEvent *ev) {
 
 static void do_config_tick(App *app) {
     long now_ms = ms_now();
-    int blink_changed = 0;
+
+    if (app->insights_open) {
+        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
+        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
+            if (app->cfg_win && app->state == STATE_CONFIG)
+                draw_insights(app);
+            app->cfg_anim_last_ms = now_ms;
+        }
+        return;
+    }
+
+    if (app->help_open) {
+        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
+        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
+            if (app->cfg_win && app->state == STATE_CONFIG)
+                draw_help(app);
+            app->cfg_anim_last_ms = now_ms;
+        }
+        return;
+    }
+
     if (now_ms - app->cursor_blink_ts > 530) {
         app->cursor_blink = !app->cursor_blink;
         app->cursor_blink_ts = now_ms;
-        blink_changed = 1;
     }
 
     if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
-    if (now_ms - app->cfg_anim_last_ms >= 33) {
+    if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
         if (app->cfg_win && app->state == STATE_CONFIG)
             draw_config_anim(app);
         app->cfg_anim_last_ms = now_ms;
-    } else if (blink_changed && app->cfg_win && app->state == STATE_CONFIG) {
-        draw_config_panel(app);
     }
 
     /* Live until-countdown preview — reparse once per wall-clock second. */
@@ -613,7 +699,8 @@ static void do_config_tick(App *app) {
         if (ws != app->cfg_last_wall_sec) {
             app->cfg_last_wall_sec = ws;
             cfg_refresh_preview(app);
-            draw_config_panel(app);
+            if (app->cfg_win && app->state == STATE_CONFIG)
+                draw_config_anim(app);
         }
     }
 }
@@ -628,14 +715,16 @@ static void main_loop(App *app) {
         struct timeval tv;
         int tick_ms = 250;
         switch (app->state) {
-        case STATE_CONFIG:  tick_ms = TICK_CONFIG_ANIM_MS;   break;
+        case STATE_CONFIG:  tick_ms = g_config.tick_config_anim_ms;   break;
         case STATE_RUNNING:
-            tick_ms = (app->remaining_seconds <= 10) ? TICK_TIMER_LAST10_MS : TICK_TIMER_RUN_MS;
+            tick_ms = (app->remaining_seconds <= 10) ? g_config.tick_last10_ms : g_config.tick_run_ms;
             break;
-        case STATE_PAUSED:  tick_ms = TICK_TIMER_PAUSED_MS;  break;
-        case STATE_ALERT:   tick_ms = TICK_ALERT_MS;         break;
+        case STATE_PAUSED:  tick_ms = g_config.tick_paused_ms;  break;
+        case STATE_ALERT:   tick_ms = g_config.tick_alert_ms;         break;
         default:            tick_ms = 250;                   break;
         }
+        if (app->is_dragging || app->cfg_is_dragging || app->is_resizing)
+            tick_ms = 1;
         tv.tv_sec  = tick_ms / 1000;
         tv.tv_usec = (tick_ms % 1000) * 1000;
         fd_set rfds; FD_ZERO(&rfds); FD_SET(xfd, &rfds);
@@ -673,17 +762,21 @@ static int app_init(App *app) {
     app->logfp = fopen(app->log_path, "a");
     /* app->db_path is resolved by db_init() to sit next to the binary */
 
-    app->theme_idx  = rand() % N_THEMES;
+    config_load(app);
+    generate_themes();
+
+    app->theme_idx  = (g_config.default_theme >= 0) ? g_config.default_theme
+                                                      : rand() % N_THEMES;
     app->cfg_focused = 1;
     app->state      = STATE_CONFIG;
     app->mode       = MODE_ALERT;
-    app->mini       = 1;
-    app->pausable   = 0;
+    app->mini       = g_config.default_fullscreen ? 0 : 1;
+    app->pausable   = g_config.default_pausable;
     app->session_id = 0;
     app->blink_on   = 1;
     app->blink_ts   = ms_now();
     app->quote_idx = -1;
-    app->quote_prev_idx = -1;
+    app->quote_next_idx = -1;
     app->quote_cycle_ts = 0;
     app->cfg_last_wall_sec = 0;
 

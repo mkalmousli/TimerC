@@ -56,49 +56,99 @@
 #define MAX_MONITORS    8
 #define MAX_FONT_CACHE  64
 
-/* Tick pacing (lower = smoother, higher = lower CPU/GPU) */
-#define TICK_CONFIG_MS        500
-/* Config view animates the analog clock + quote morph; redraw at ~60fps
- * so the hands sweep continuously instead of jumping each second. */
-#define TICK_CONFIG_ANIM_MS    16
-#define TICK_TIMER_RUN_MS    1000
-#define TICK_TIMER_LAST10_MS  100
-#define TICK_TIMER_PAUSED_MS 1000
-#define TICK_ALERT_MS          16   /* ~60fps so the beat-synced strobe is crisp */
+/* Insights / data browser (Ctrl+I in config window) */
+#define INS_W             1180
+#define INS_H              880
+#define INS_MAX_SESSIONS   128
+#define INS_MAX_EVENTS     128
+#define INS_CHART_DAYS      14
+#define INS_SESS_VISIBLE    16
+#define INS_EVT_VISIBLE     20
 
 /* Alarm rhythm — shared between audio.c (note synthesis) and draw.c (the
  * alert window flashes a color on each strike, in time with the sound).
- * Onsets are seconds-into-period for the six notes of the motif. */
-#define ALARM_PERIOD  2.4f
+ * Onsets are seconds-into-period for the six notes of the motif. The
+ * motif's note count/shape is fixed at compile time; its tempo/volume/
+ * timing are runtime-configurable — see config.c and the Config struct
+ * below. */
 #define ALARM_N       6
 #define ALARM_ONSETS  { 0.00f, 0.40f, 0.80f, 1.20f, 1.65f, 2.05f }
 
-/* The motif accelerates over time, growing more frantic and aggressive.
- * Speed (periods/sec) rises linearly until the period bottoms out. */
-#define ALARM_ACCEL       0.06    /* rate increase per second of alerting */
-#define ALARM_PERIOD_MIN  0.80    /* fastest (shortest) period, seconds   */
+/* All other tunables below (tick pacing, alarm tempo/volume/duration,
+ * window sizing) live in the Config struct (see "config.c" further
+ * down) and are user-adjustable via ~/.config/timer_c/config.conf.
+ * These DEFAULT_* constants are only the built-in fallback values that
+ * config.c seeds the config struct with; nothing else should reference
+ * them directly — use g_config.* instead. */
+#define DEFAULT_TICK_CONFIG_MS        500
+#define DEFAULT_TICK_CONFIG_ANIM_MS    16
+#define DEFAULT_TICK_TIMER_RUN_MS    1000
+#define DEFAULT_TICK_TIMER_LAST10_MS  100
+#define DEFAULT_TICK_TIMER_PAUSED_MS 1000
+#define DEFAULT_TICK_ALERT_MS          16
 
-/* Brightness/level build ramps from 0→1 over this many seconds. */
-#define ALARM_AGGRO_SECS  80.0
+#define DEFAULT_ALARM_VOLUME_PERCENT  40.0
+#define DEFAULT_ALARM_RAMP_SECONDS    10.0
+#define DEFAULT_ALARM_PERIOD           2.4
+#define DEFAULT_ALARM_ACCEL            0.015
+#define DEFAULT_ALARM_PERIOD_MIN       1.20
+#define DEFAULT_ALARM_AGGRO_SECONDS   80.0
+#define DEFAULT_ALARM_MAX_SECONDS    120.0
 
-/* Auto-mute the alarm after this long if the user never stops it. */
-#define ALARM_MAX_SECONDS 120.0   /* 5 minutes */
+#define DEFAULT_CFG_W   500
+#define DEFAULT_CFG_H   760
 
-/* Config window dimensions */
-#define CFG_W   500
-#define CFG_H   760
+#define DEFAULT_MINI_W        250
+#define DEFAULT_MINI_H_BASE   130
+#define DEFAULT_MINI_H_UNTIL  172
+#define DEFAULT_MINI_W_MIN    130
+#define DEFAULT_MINI_H_MIN     72
 
-/* Mini timer default dimensions */
-#define MINI_W        250
-#define MINI_H_BASE   130
-#define MINI_H_UNTIL  172
+#define DEFAULT_RESIZE_ZONE    22
 
-/* Mini resize constraints */
-#define MINI_W_MIN    130
-#define MINI_H_MIN     72
+#define DEFAULT_THEME_IDX      -1   /* -1 = random */
+#define DEFAULT_PAUSABLE        0
+#define DEFAULT_FULLSCREEN      0
 
-/* Resize corner hit zone */
-#define RESIZE_ZONE    22
+/* ── Config (user-tunable settings) ────────────────────────
+ * Loaded at startup by config.c from ~/.config/timer_c/config.conf
+ * (or $XDG_CONFIG_HOME/timer_c/config.conf). Every field has a
+ * documented min/max enforced by config.c — see config.c's CFG_FIELDS
+ * table for the authoritative ranges, docs and examples; that same
+ * table is what generates the on-disk example/default file. Access
+ * the live values through the global g_config; nothing should read
+ * the DEFAULT_* macros above directly except config.c itself. */
+typedef struct {
+    /* Alarm sound */
+    double alarm_volume_percent;  /* system volume set right before the alarm plays */
+    double alarm_ramp_seconds;    /* fade-in length of the alarm volume            */
+    double alarm_period;          /* base seconds per motif repeat                 */
+    double alarm_period_min;      /* fastest (shortest) period the tempo ramps to  */
+    double alarm_accel;           /* tempo increase per second of alerting         */
+    double alarm_aggro_seconds;   /* seconds for brightness/level to ramp 0→1      */
+    double alarm_max_seconds;     /* auto-mute the alarm after this long           */
+
+    /* Window sizing (pixels) */
+    int cfg_w, cfg_h;
+    int mini_w, mini_h_base, mini_h_until;
+    int mini_w_min, mini_h_min;
+    int resize_zone;
+
+    /* Tick pacing (milliseconds) */
+    int tick_config_ms;
+    int tick_config_anim_ms;
+    int tick_run_ms;
+    int tick_last10_ms;
+    int tick_paused_ms;
+    int tick_alert_ms;
+
+    /* Startup defaults */
+    int default_theme;     /* -1 = random, else 0..N_THEMES-1 */
+    int default_pausable;  /* 0/1 */
+    int default_fullscreen;/* 0/1 */
+} Config;
+
+extern Config g_config;
 
 /* ── Enums ─────────────────────────────────────────────── */
 
@@ -121,7 +171,7 @@ typedef struct {
     unsigned long lcd_active, lcd_paused;
 } Theme;
 
-extern const Theme THEMES[N_THEMES];
+extern Theme THEMES[N_THEMES];   /* generated at runtime — see generate_themes() */
 
 /* ── Font cache entry ──────────────────────────────────── */
 
@@ -170,6 +220,52 @@ typedef struct {
     int  sw_shutdown, sw_alert, sw_fullscreen, sw_pausable;
 } ParseResult;
 
+typedef struct {
+    int64_t id;
+    char    started_at[24];
+    char    ended_at[24];
+    int     duration_s;
+    int     elapsed_s;
+    char    task[MAX_TASK];
+    char    mode[12];
+    char    status[12];
+    int     pausable;
+    int     fullscreen;
+} DbSession;
+
+typedef struct {
+    int64_t id;
+    int64_t session_id;
+    char    ts[24];
+    char    event[48];
+    char    detail[256];
+} DbEvent;
+
+typedef struct {
+    char day_iso[16];
+    char day_label[40];
+    int  sessions;
+    int  completed, stopped;
+    long elapsed_s, planned_s;
+    int  avg_duration_s;
+    int  avg_elapsed_s;
+    int  events;
+    int  hour_counts[24];
+    int  dur_buckets[4];   /* <5m, 5-15m, 15-30m, 30m+ */
+} DbDayView;
+
+typedef struct {
+    int  sessions_total;
+    int  completed, stopped, running;
+    int  mode_alert, mode_shutdown;
+    long elapsed_total_s;
+    long planned_total_s;
+    int  events_total;
+    int  day_counts[INS_CHART_DAYS];
+    char day_labels[INS_CHART_DAYS][4];
+    char day_dates[INS_CHART_DAYS][16];
+} DbSummary;
+
 /* ── App state struct ──────────────────────────────────── */
 
 typedef struct {
@@ -207,6 +303,7 @@ typedef struct {
     /* Double-buffering pixmaps */
     Pixmap     cfg_buf;
     XftDraw   *cfg_buf_xft;
+    int        cfg_buf_w, cfg_buf_h;
     Pixmap     tmr_buf;
     XftDraw   *tmr_buf_xft;
     int        tmr_buf_w, tmr_buf_h;   /* allocated size (may be >= window size) */
@@ -247,7 +344,7 @@ typedef struct {
     int        cursor_blink;
     long       cursor_blink_ts;
     int        quote_idx;
-    int        quote_prev_idx;
+    int        quote_next_idx;
     long       quote_cycle_ts;
 
     /* Config preview cache (parse once per keystroke, not per frame) */
@@ -265,6 +362,23 @@ typedef struct {
     int        theme_idx;
     int        cfg_focused;   /* 1 = config window has keyboard focus */
 
+    /* Help overlay (Ctrl+H, on the start screen) */
+    int        help_open;
+
+    /* Insights browser (Ctrl+I) */
+    int        insights_open;
+    int        ins_day_offset;
+    DbSummary  ins_summary;
+    DbDayView  ins_day;
+    DbSession  ins_sessions[INS_MAX_SESSIONS];
+    int        ins_n_sessions;
+    DbEvent    ins_events[INS_MAX_EVENTS];
+    int        ins_n_events;
+    int        ins_sel;
+    int        ins_sess_scroll;
+    int        ins_evt_scroll;
+    int64_t    ins_loaded_session_id;
+
     /* Monitor geometry */
     int        mon_x, mon_y, mon_w, mon_h;
 
@@ -275,6 +389,7 @@ typedef struct {
     int        drag_px, drag_py;
     int        drag_wx, drag_wy;
     int        is_dragging;
+    int        drag_grabbed;
 
     /* Config-window drag */
     int        cfg_is_dragging;
@@ -355,20 +470,20 @@ static inline long ms_now(void) {
  * giving a continuous musical phase in "periods" so the audio beat and
  * the visual flashes stay perfectly locked as the tempo changes. */
 static inline double alarm_speed(double t) {
-    double s0   = 1.0 / ALARM_PERIOD;
-    double smax = 1.0 / ALARM_PERIOD_MIN;
-    double s    = s0 * (1.0 + ALARM_ACCEL * t);
+    double s0   = 1.0 / g_config.alarm_period;
+    double smax = 1.0 / g_config.alarm_period_min;
+    double s    = s0 * (1.0 + g_config.alarm_accel * t);
     return s > smax ? smax : s;
 }
 
 static inline double alarm_phase(double t) {
     if (t < 0.0) t = 0.0;
-    double s0   = 1.0 / ALARM_PERIOD;
-    double smax = 1.0 / ALARM_PERIOD_MIN;
-    double tc   = (smax / s0 - 1.0) / ALARM_ACCEL;   /* time speed hits the cap */
+    double s0   = 1.0 / g_config.alarm_period;
+    double smax = 1.0 / g_config.alarm_period_min;
+    double tc   = (smax / s0 - 1.0) / g_config.alarm_accel;   /* time speed hits the cap */
     if (t <= tc)
-        return s0 * (t + 0.5 * ALARM_ACCEL * t * t);
-    double phase_tc = s0 * (tc + 0.5 * ALARM_ACCEL * tc * tc);
+        return s0 * (t + 0.5 * g_config.alarm_accel * t * t);
+    double phase_tc = s0 * (tc + 0.5 * g_config.alarm_accel * tc * tc);
     return phase_tc + smax * (t - tc);
 }
 
@@ -377,6 +492,9 @@ static inline double alarm_phase(double t) {
 /* timer.c */
 void app_log(App *app, const char *level, const char *fmt, ...);
 void detect_monitor(App *app, int ptr_x, int ptr_y);
+
+/* config.c */
+void config_load(App *app);
 
 /* parse.c */
 void format_time(int secs, char *out, size_t sz);
@@ -395,14 +513,28 @@ void db_init(App *app);
 void db_start_session(App *app);
 void db_finish_session(App *app, const char *status);
 void db_log_event(App *app, const char *event, const char *detail);
+void db_insights_reload(App *app);
+void db_insights_load_day(App *app, int day_offset);
+void db_insights_load_events(App *app, int64_t session_id);
 
 /* draw.c */
+void generate_themes(void);
 void cfg_refresh_preview(App *app);
 void cfg_update_layout(App *app);
+void cfg_draw_cyber_bg(App *app, Drawable buf, const Theme *th,
+                       int x, int y, int w, int h, double t);
+void draw_release_quote_cache(App *app);
 void draw_config(App *app);
 void draw_config_anim(App *app);
 void draw_config_panel(App *app);
 void cfg_redraw_after_input(App *app);
+void draw_help(App *app);
+
+void ins_enter(App *app);
+void ins_leave(App *app);
+void draw_insights(App *app);
+void ins_handle_key(App *app, XKeyEvent *ev);
+int  ins_handle_click(App *app, int mx, int my);
 void draw_timer(App *app);
 void draw_alert(App *app);
 void create_config_window(App *app);

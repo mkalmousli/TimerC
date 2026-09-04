@@ -1,0 +1,64 @@
+# ── Build artifacts ──────────────────────────────────────
+timer
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+*.dll
+
+# ── SQLite runtime database ──────────────────────────────
+data.db
+data.db-journal
+data.db-shm
+data.db-wal
+*.db-shm
+*.db-wal
+
+# ── Debug / profiling ────────────────────────────────────
+*.dSYM/
+*.su
+*.idb
+*.pdb
+core
+core.*
+vgcore.*
+*.core
+*.gcda
+*.gcno
+*.gcov
+*.prof
+gmon.out
+
+# ── Editor / IDE ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.#*
+\#*\#
+*.bak
+*.orig
+*.rej
+*.sublime-project
+*.sublime-workspace
+.claude/
+.cursor/
+
+# ── OS junk ──────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ── Logs / temp ──────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+*.cache

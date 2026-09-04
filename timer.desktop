@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Timer
+Comment=Native X11 countdown timer
+Exec=timer
+Icon=timer
+Terminal=false
+Categories=Utility;

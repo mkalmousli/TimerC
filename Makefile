@@ -1,6 +1,6 @@
 CC      = gcc
 TARGET  = timer
-SRCS    = timer.c draw.c parse.c audio.c db.c
+SRCS    = timer.c draw.c parse.c audio.c db.c config.c
 
 CFLAGS  = -O2 -Wall -Wextra -Wno-unused-parameter \
           $(shell pkg-config --cflags x11 xft xinerama xrandr 2>/dev/null) \
@@ -28,7 +28,12 @@ $(TARGET): $(OBJS)
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(HOME)/.local/bin/$(TARGET)
+	install -Dm644 timer.desktop $(HOME)/.local/share/applications/timer.desktop
+	install -Dm644 timer.svg $(HOME)/.local/share/icons/hicolor/scalable/apps/timer.svg
+	-update-desktop-database $(HOME)/.local/share/applications 2>/dev/null
+	-gtk-update-icon-cache $(HOME)/.local/share/icons/hicolor 2>/dev/null
 	@echo "Installed to $(HOME)/.local/bin/$(TARGET)"
+	@echo "Installed desktop entry and icon — launch via app menu or run 'timer' anywhere (ensure ~/.local/bin is on PATH)"
 
 clean:
 	rm -f $(TARGET) *.o

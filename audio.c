@@ -295,24 +295,30 @@ void kill_all_audio(App *app) {
 }
 
 /* ── Alarm streaming synthesis ──────────────────────────────
-   Wake-up siren: starts low and quiet, fades in over ~10 s,
-   then pitch and urgency continue rising gradually.           */
+   Cheerful note-block-style bell arpeggio (think Minecraft's harp/XP
+   pickup chime) — starts quiet, fades in, and gets a little more
+   insistent over time, but stays warm and friendly rather than tense
+   or ominous. Pure sine + soft overtones only, no square waves or
+   sub-bass rumble.                                              */
 
 static const float AL_ONSET[ALARM_N] = ALARM_ONSETS;
-static const float AL_FREQ [ALARM_N] = {329.63f, 392.00f, 523.25f, 659.25f, 523.25f, 392.00f};
-static const float AL_DECAY[ALARM_N] = {3.5f,    3.3f,    3.1f,    2.9f,    3.2f,   3.4f};
-static const float AL_AMP  [ALARM_N] = {0.92f,   0.88f,   0.88f,   0.95f,   0.82f,  0.78f};
+/* A major arpeggio, up and back down — A4 C#5 E5 A5 E5 C#5 */
+static const float AL_FREQ [ALARM_N] = {440.00f, 554.37f, 659.25f, 880.00f, 659.25f, 554.37f};
+static const float AL_DECAY[ALARM_N] = {5.0f,    5.0f,    4.6f,    4.2f,    4.6f,   5.0f};
+static const float AL_AMP  [ALARM_N] = {0.85f,   0.85f,   0.90f,   1.00f,   0.85f,  0.80f};
 
 static float render_alarm_tone(float freq, float dt, float dc, float bright) {
-    float at2  = 1.0f - expf(-dt * 120.0f);
-    float ring = expf(-dt * dc);
-    float f    = freq;
-    float s    = sinf((float)TAU * f * dt);
-    float sq   = sinf((float)TAU * f * dt) >= 0.0f ? 1.0f : -1.0f;
-    s = (0.55f * s + 0.45f * sq) * ring * at2;
-    s += (0.20f + 0.15f * bright) * sinf((float)TAU * f * 2.0f * dt) * ring * at2;
-    s += 0.12f * sinf((float)TAU * f * 3.0f * dt) * expf(-dt * dc * 1.5f) * at2;
-    return s;
+    /* Soft mallet attack (rounded, not a hard click) + natural decay,
+     * like a struck wooden bar. */
+    float pluck = 1.0f - expf(-dt * 140.0f);
+    float ring  = expf(-dt * dc);
+    float f     = freq;
+    float s     = sinf((float)TAU * f * dt);
+    /* Gentle warm overtones only — no harsh square wave, kept quiet so
+     * they can never dominate the fundamental. */
+    s += 0.16f * sinf((float)TAU * f * 2.0f * dt) * expf(-dt * dc * 1.7f);
+    s += 0.05f * sinf((float)TAU * f * 4.0f * dt) * expf(-dt * dc * 2.4f) * bright;
+    return s * ring * pluck;
 }
 
 static ssize_t write_all_fd(int fd, const void *buf, size_t n) {
@@ -336,19 +342,12 @@ static void close_all_outputs(AudioJob *job) {
         close(job->outputs[i].fd);
 }
 
+/* This thread only ever handles the long-running, looping alert siren —
+ * short UI cues go through the persistent cue backend below instead, so
+ * job->active_flag is always non-NULL here. */
 static void *audio_writer_thread(void *arg) {
     AudioJob *job = (AudioJob *)arg;
-    if (job->active_flag == NULL) {
-        ssize_t total = job->n_samples * 2;
-        const uint8_t *ptr = (const uint8_t *)job->samples;
-        while (total > 0) {
-            size_t chunk = (size_t)total;
-            if (chunk > 8192) chunk = 8192;
-            write_all_outputs(job, ptr, chunk);
-            ptr   += chunk;
-            total -= (ssize_t)chunk;
-        }
-    } else {
+    {
         const int CHUNK = SAMPLE_RATE / 20;
         int16_t *chunk  = (int16_t *)malloc(CHUNK * sizeof(int16_t));
         if (!chunk) goto done;
@@ -358,17 +357,17 @@ static void *audio_writer_thread(void *arg) {
         while (*job->active_flag) {
             float elapsed = (float)phase / SAMPLE_RATE;
 
-            /* 10 s volume fade — smootherstep keeps the start gentle. */
-            float fade  = smootherstep(elapsed / job->alert_ramp_seconds);
+            /* Volume fade-in (length configurable) — smootherstep keeps the
+             * start gentle. A zero-length ramp means "full volume immediately". */
+            float fade  = job->alert_ramp_seconds > 0.0f
+                          ? smootherstep(elapsed / job->alert_ramp_seconds)
+                          : 1.0f;
             float ramp  = 0.04f + 0.96f * fade;
 
-            /* Pitch climbs slowly; tied partly to fade so it rises with volume. */
-            float pitch_late = smootherstep(elapsed / 55.0f);
-            float pitch_build = 0.40f + 0.38f * fade + 0.32f * pitch_late;
-
-            float bright = smootherstep((float)(elapsed / ALARM_AGGRO_SECS));
+            /* Gets a touch brighter/more present over time so it stays
+             * noticeable, without pitch-bending or growling like a siren. */
+            float bright = smootherstep((float)(elapsed / g_config.alarm_aggro_seconds));
             if (bright > 1.0f) bright = 1.0f;
-            /* Softer timbre at first, sharpening as the fade completes. */
             float tone_bright = bright * (0.30f + 0.70f * fade);
 
             for (int i = 0; i < CHUNK; i++) {
@@ -380,21 +379,24 @@ static void *audio_writer_thread(void *arg) {
                 float s = 0.0f;
 
                 for (int j = 0; j < ALARM_N; j++) {
-                    double onf = (double)AL_ONSET[j] / ALARM_PERIOD;
+                    double onf = (double)AL_ONSET[j] / g_config.alarm_period;
                     double dph = fp - onf;
                     if (dph < 0.0) dph += 1.0;
                     float dt = (float)(dph * persec);
-                    float freq = AL_FREQ[j] * pitch_build;
-                    s += render_alarm_tone(freq, dt, AL_DECAY[j], tone_bright) * AL_AMP[j];
+                    s += render_alarm_tone(AL_FREQ[j], dt, AL_DECAY[j], tone_bright) * AL_AMP[j];
                 }
+                /* Headroom: when the tempo is fast, several notes ring at
+                 * once and can sum past +/-1 — divide down first so the
+                 * final soft-clip below is shaping, not hard-clipping a
+                 * huge peak (hard clipping is what made this sound like a
+                 * harsh, distorted siren). */
+                s *= 0.42f;
 
-                float sub = 0.22f * fade * (0.50f + 0.50f * pitch_build)
-                            * sinf((float)TAU * 92.0f * pitch_build * (float)tt);
-                s += sub;
-
-                float level = 0.46f + 0.32f * fade + 0.34f * bright;
+                float level = 0.50f + 0.24f * fade + 0.14f * bright;
                 s *= ramp * level;
-                s = clampf(s, -0.97f, 0.97f);
+                /* Soft saturation (tanh) instead of a hard clamp — gentle
+                 * rounding of any remaining peaks, no digital clipping. */
+                s = tanhf(s * 1.15f);
                 chunk[i] = (int16_t)(s * 32767.0f);
             }
 
@@ -421,6 +423,29 @@ done:
 
 static void run_cmd(const char *cmd) { int r = system(cmd); (void)r; }
 
+/* Returns the sink's current volume as a percentage, or -1 if it could not
+ * be determined (in which case the caller should just set it). */
+static int query_sink_volume_pct(const char *pactl, const char *sink) {
+    char cmd[640];
+    snprintf(cmd, sizeof(cmd), "%s get-sink-volume %s 2>/dev/null", pactl, sink);
+    FILE *f = popen(cmd, "r");
+    if (!f) return -1;
+
+    int pct = -1;
+    char line[512];
+    if (fgets(line, sizeof(line), f)) {
+        char *p = strchr(line, '/');
+        if (p) {
+            /* Landed on "front-left: N /  PCT% / ..." — walk to the '%' after this '/'. */
+            char *pct_str = p + 1;
+            while (*pct_str == ' ') pct_str++;
+            pct = atoi(pct_str);
+        }
+    }
+    pclose(f);
+    return pct;
+}
+
 static void ensure_volume(int pct) {
     const char *pactl_paths[] = {"/usr/bin/pactl", "/usr/local/bin/pactl", NULL};
     const char *pactl = NULL;
@@ -442,10 +467,80 @@ static void ensure_volume(int pct) {
         char cmd[640];
         snprintf(cmd, sizeof(cmd), "%s set-sink-mute %s 0 2>/dev/null", pactl, sinks[i]);
         run_cmd(cmd);
+
+        /* Never lower volume that's already above the alarm target — only
+         * raise it up to the target if it's below. */
+        int current = query_sink_volume_pct(pactl, sinks[i]);
+        if (current >= pct) continue;
+
         snprintf(cmd, sizeof(cmd), "%s set-sink-volume %s %d%% 2>/dev/null",
                  pactl, sinks[i], pct);
         run_cmd(cmd);
     }
+}
+
+/* ── Persistent cue backend ───────────────────────────────
+   UI cues (start/pause/stop/half/...) fire far more often than the alarm
+   and are short, so spawning a fresh pacat/pw-play/aplay process per sink
+   for every single cue wastes a fork+exec's worth of latency and process
+   churn each time. Instead, keep one set of player processes open and
+   reuse it across cues, respawning lazily only if a player has died (e.g.
+   the audio server restarted). A mutex serializes writes so two cues
+   fired back to back don't interleave their samples on the wire. */
+
+static pthread_mutex_t g_cue_lock = PTHREAD_MUTEX_INITIALIZER;
+static AudioOutput     g_cue_outs[MAX_AUDIO_OUTPUTS];
+static int             g_cue_n = 0;
+static int             g_cue_ready = 0;
+
+typedef struct { int16_t *samples; int n; App *app; } CueJob;
+
+static void *cue_writer_thread(void *arg) {
+    CueJob *cj = (CueJob *)arg;
+
+    pthread_mutex_lock(&g_cue_lock);
+
+    if (g_cue_ready) {
+        /* waitpid(WNOHANG), not kill(pid,0) — a zombie still answers
+         * kill(pid,0) successfully, so that check would miss a player
+         * that already exited (e.g. killed alongside the alarm via
+         * kill_all_audio) but hasn't been reaped yet. */
+        int alive = 1;
+        for (int i = 0; i < g_cue_n; i++)
+            if (waitpid(g_cue_outs[i].pid, NULL, WNOHANG) != 0) { alive = 0; break; }
+        if (!alive) {
+            for (int i = 0; i < g_cue_n; i++) close(g_cue_outs[i].fd);
+            g_cue_n = 0;
+            g_cue_ready = 0;
+        }
+    }
+    if (!g_cue_ready) {
+        g_cue_n = spawn_all_outputs(g_cue_outs, MAX_AUDIO_OUTPUTS);
+        if (g_cue_n > 0) {
+            for (int i = 0; i < g_cue_n; i++)
+                track_audio_pid(cj->app, g_cue_outs[i].pid);
+            g_cue_ready = 1;
+        }
+    }
+
+    if (g_cue_ready) {
+        ssize_t total = (ssize_t)cj->n * 2;
+        const uint8_t *ptr = (const uint8_t *)cj->samples;
+        while (total > 0) {
+            size_t chunk = (size_t)total;
+            if (chunk > 8192) chunk = 8192;
+            for (int i = 0; i < g_cue_n; i++)
+                write_all_fd(g_cue_outs[i].fd, ptr, chunk);
+            ptr   += chunk;
+            total -= (ssize_t)chunk;
+        }
+    }
+
+    pthread_mutex_unlock(&g_cue_lock);
+
+    free(cj->samples);
+    free(cj);
+    return NULL;
 }
 
 void play_cue(App *app, const char *kind) {
@@ -453,28 +548,23 @@ void play_cue(App *app, const char *kind) {
     int16_t *samples = generate_cue(kind, &n);
     if (!samples || n == 0) { free(samples); return; }
 
-    AudioJob *job = (AudioJob *)calloc(1, sizeof(AudioJob));
-    if (!job) { free(samples); return; }
-
-    job->n_outputs = spawn_all_outputs(job->outputs, MAX_AUDIO_OUTPUTS);
-    if (job->n_outputs <= 0) { free(samples); free(job); return; }
-
-    for (int i = 0; i < job->n_outputs; i++)
-        track_audio_pid(app, job->outputs[i].pid);
-
-    job->samples = samples;
-    job->n_samples = n;
-    job->active_flag = NULL;
+    CueJob *cj = (CueJob *)calloc(1, sizeof(CueJob));
+    if (!cj) { free(samples); return; }
+    cj->samples = samples;
+    cj->n       = n;
+    cj->app     = app;
 
     pthread_t tid; pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_create(&tid, &attr, audio_writer_thread, job);
+    pthread_create(&tid, &attr, cue_writer_thread, cj);
     pthread_attr_destroy(&attr);
 }
 
 void play_alert_sound(App *app) {
-    ensure_volume(40);
+    /* The only place in the program that ever changes system volume — see
+     * the "Volume guarantee" note at the top of config.c. */
+    ensure_volume((int)g_config.alarm_volume_percent);
     kill_all_audio(app);
     app->alert_audio_active = 1;
 
@@ -490,7 +580,7 @@ void play_alert_sound(App *app) {
     job->samples = NULL;
     job->n_samples = 0;
     job->active_flag = &app->alert_audio_active;
-    job->alert_ramp_seconds = 10.0f;
+    job->alert_ramp_seconds = (float)g_config.alarm_ramp_seconds;
 
     pthread_t tid; pthread_attr_t attr;
     pthread_attr_init(&attr);
