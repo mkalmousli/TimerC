@@ -121,14 +121,60 @@ void detect_monitor(App *app, int ptr_x, int ptr_y) {
     XRRFreeScreenResources(res);
 }
 
+/* ── Input lock (-l switch) ────────────────────────────── */
+
+/* Grabs the keyboard and pointer for the whole X server, so nothing but
+ * this process sees key/button events until release_input() runs. Retries
+ * briefly since a window manager can hold a transient grab (e.g. during a
+ * window-map animation) right after the timer window appears. */
+static void grab_input_on(App *app, Window w) {
+    if (app->input_grabbed || !w) return;
+    int kb_ok = 0, ptr_ok = 0;
+    for (int i = 0; i < 20 && (!kb_ok || !ptr_ok); i++) {
+        if (!kb_ok) {
+            int r = XGrabKeyboard(app->dpy, w, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+            kb_ok = (r == GrabSuccess);
+        }
+        if (!ptr_ok) {
+            int r = XGrabPointer(app->dpy, w, True,
+                                  ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                                  GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+            ptr_ok = (r == GrabSuccess);
+        }
+        if (!kb_ok || !ptr_ok) usleep(25000);
+    }
+    app->input_grabbed = kb_ok || ptr_ok;
+    if (!kb_ok) app_log(app, "WARN", "Failed to grab keyboard for lock mode");
+    if (!ptr_ok) app_log(app, "WARN", "Failed to grab pointer for lock mode");
+    else app_log(app, "INFO", "Input locked: keyboard=%d pointer=%d", kb_ok, ptr_ok);
+}
+
+static void grab_input(App *app) { grab_input_on(app, app->tmr_win); }
+
+static void release_input(App *app) {
+    if (!app->input_grabbed) return;
+    XUngrabKeyboard(app->dpy, CurrentTime);
+    XUngrabPointer(app->dpy, CurrentTime);
+    XFlush(app->dpy);
+    app->input_grabbed = 0;
+    app_log(app, "INFO", "Input unlocked");
+}
+
 /* ── State transitions ─────────────────────────────────── */
 
 static void do_quit(App *app) {
+    if (app->input_grabbed) release_input(app);
+    if (app->hw_lock.active) hw_lock_release(&app->hw_lock);
     app_log(app, "INFO", "Quitting");
     app->alert_audio_active = 0;
-    /* Only forcibly kill audio when leaving an alert — cue sounds are short
-     * and should play to completion after windows are gone. */
-    if (app->state == STATE_ALERT) kill_all_audio(app);
+    app->sleep_audio_active = 0;
+    /* Only forcibly kill audio when leaving an alert (or stopping a sleep
+     * timer's ambient loop, or a sleep-preview audition) — cue sounds are
+     * short and should play to completion after windows are gone. */
+    if (app->state == STATE_ALERT || app->sleep_mode || app->sleep_preview_open)
+        kill_all_audio(app);
+    if (app->sleep_preview) { free(app->sleep_preview); app->sleep_preview = NULL; }
+    app->sleep_preview_open = 0;
     db_finish_session(app, "stopped");
     destroy_alert_windows(app);
     destroy_timer_window(app);
@@ -190,6 +236,19 @@ static void start_running(App *app) {
     if (app->cfg_win) XWithdrawWindow(app->dpy, app->cfg_win, app->screen);
     XFlush(app->dpy);
     play_cue(app, "start");
+    if (app->sleep_mode) play_sleep_ambient(app, (double)app->total_seconds);
+    if (app->lock) {
+        grab_input(app); /* X-level fallback / belt-and-suspenders */
+        if (hw_lock_engage(&app->hw_lock, app->total_seconds)) {
+            app_log(app, "INFO", "Hardware input lock engaged (%d device(s) deauthorized)",
+                    app->hw_lock.n_devices);
+        } else {
+            app_log(app, "WARN",
+                    "Hardware input lock unavailable (setuid helper not installed — run "
+                    "'sudo make install-lock-helper' once — or no USB HID keyboard/mouse "
+                    "found) — falling back to X11 grab only, which is not a full disconnect");
+        }
+    }
 }
 
 static void toggle_mini_fullscreen(App *app) {
@@ -211,6 +270,7 @@ static void toggle_mini_fullscreen(App *app) {
     create_timer_window(app);
     app->tmr_force_redraw = 1;
     play_cue(app, app->mini ? "pause" : "resume");
+    if (app->lock) { app->input_grabbed = 0; grab_input(app); }
 }
 
 static void toggle_pause(App *app) {
@@ -244,6 +304,11 @@ static void timer_finished(App *app) {
     app->remaining_seconds = 0;
     app->remaining_exact   = 0.0;
     destroy_timer_window(app);
+    /* The lock's whole point was making the countdown uncancelable — once
+     * it's actually finished there's nothing left to protect, so hand
+     * keyboard/mouse straight back for the alert/shutdown that follows. */
+    if (app->input_grabbed) release_input(app);
+    if (app->hw_lock.active) hw_lock_release(&app->hw_lock);
 
     if (app->mode == MODE_SHUTDOWN) {
         db_log_event(app, "shutdown_trigger", NULL);
@@ -259,7 +324,9 @@ static void timer_finished(App *app) {
         play_cue(app, "alert_open");
         create_alert_windows(app);
         app->state = STATE_ALERT;
-        play_alert_sound(app);
+        /* Sleep mode: the ambient thread already eased into its wake
+         * melody near the end and keeps playing it — no harsh siren. */
+        if (!app->sleep_mode) play_alert_sound(app);
     }
 }
 
@@ -347,13 +414,57 @@ static void drain_motion(App *app, XEvent *ev, int *rx, int *ry) {
     }
 }
 
+/* "/testsleep <time>" typed into the input, e.g. "/testsleep u6:30" —
+ * returns the trimmed time string that follows, or NULL if the input
+ * doesn't start with the command. */
+static const char *testsleep_arg(const char *s) {
+    while (*s && isspace((unsigned char)*s)) s++;
+    static const char cmd[] = "/testsleep";
+    size_t n = sizeof(cmd) - 1;
+    if (strncmp(s, cmd, n) != 0) return NULL;
+    const char *after = s + n;
+    if (*after && !isspace((unsigned char)*after)) return NULL;
+    while (*after && isspace((unsigned char)*after)) after++;
+    return after;
+}
+
+static void close_sleep_preview(App *app) {
+    app->sleep_audio_active = 0;
+    kill_all_audio(app);
+    if (app->sleep_preview) { free(app->sleep_preview); app->sleep_preview = NULL; }
+    app->sleep_preview_open = 0;
+}
+
 static void handle_config_key(App *app, XKeyEvent *ev) {
     char buf[32] = "";
     KeySym ks;
     XLookupString(ev, buf, sizeof(buf)-1, &ks, NULL);
 
+    if (app->settings_open) {
+        settings_handle_key(app, ev);
+        return;
+    }
+
     if (app->insights_open) {
         ins_handle_key(app, ev);
+        return;
+    }
+
+    /* Ctrl+G opens Settings from the setup screen too (see the tmr_win
+     * KeyPress case below for opening it over a running timer). */
+    if ((ev->state & ControlMask) && (ks == XK_g || ks == XK_G)) {
+        settings_open_overlay(app, 0);
+        return;
+    }
+
+    /* Sleep preview overlay — opened by typing "/testsleep <time>" and
+     * pressing Enter (see below); closed by Esc, same shape as help/
+     * insights. */
+    if (app->sleep_preview_open) {
+        if (ks == XK_Escape) {
+            close_sleep_preview(app);
+            draw_config(app);
+        }
         return;
     }
 
@@ -387,9 +498,13 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
         return;
     }
 
-    /* Tab (or Ctrl+T) cycles through themes */
+    /* Tab (or Ctrl+T) rolls a fresh set of themes, shaped by the current
+     * time of day (see day_mood() in draw.c) — every press re-generates
+     * THEMES[] from scratch rather than just cycling a fixed set picked
+     * once at launch, so the palette always matches right now. */
     if (ks == XK_Tab ||
         ((ev->state & ControlMask) && (ks == XK_t || ks == XK_T))) {
+        generate_themes();
         app->theme_idx = (app->theme_idx + 1) % N_THEMES;
         draw_config(app);
         return;
@@ -407,6 +522,21 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
     }
 
     if (ks == XK_Return || ks == XK_KP_Enter) {
+        const char *arg = testsleep_arg(app->input);
+        if (arg) {
+            ParseResult pr; parse_time_input(arg, &pr);
+            if (pr.seconds <= 0) {
+                app_log(app, "WARN", "Invalid /testsleep time: '%s'", arg);
+                return;
+            }
+            if (app->sleep_preview) free(app->sleep_preview);
+            app->sleep_preview = sleep_build_preview((double)pr.seconds);
+            if (!app->sleep_preview) return;
+            snprintf(app->sleep_preview_input, sizeof(app->sleep_preview_input), "%s", app->input);
+            app->sleep_preview_open = 1;
+            draw_config(app);
+            return;
+        }
         ParseResult pr;
         parse_time_input(app->input, &pr);
         if (pr.seconds <= 0) {
@@ -421,6 +551,8 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
         if (pr.sw_shutdown) app->mode = MODE_SHUTDOWN; else app->mode = MODE_ALERT;
         if (pr.sw_fullscreen) app->mini = 0;
         if (pr.sw_pausable)   app->pausable = 1;
+        if (pr.sw_lock)       app->lock = 1;
+        app->sleep_mode = pr.sw_sleep;
         start_running(app);
         return;
     }
@@ -497,10 +629,20 @@ static void handle_event(App *app, XEvent *ev) {
             /* Explicitly restore keyboard focus — override_redirect windows do
              * not receive it automatically when another window takes it. */
             XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
+            if (app->settings_open) {
+                if (ev->xbutton.button == Button1)
+                    settings_handle_click(app, ev->xbutton.x, ev->xbutton.y, 1);
+                break;
+            }
             if (app->insights_open &&
                 ev->xbutton.button == Button1 &&
                 ins_handle_click(app, ev->xbutton.x, ev->xbutton.y))
                 break;
+            if (app->sleep_preview_open &&
+                ev->xbutton.button == Button1 &&
+                sleep_preview_handle_click(app, ev->xbutton.x, ev->xbutton.y))
+                break;
+            if (app->sleep_preview_open) break; /* no dragging behind the overlay */
             if (ev->xbutton.button == Button2) {
                 play_cue(app, "close");
                 do_quit(app);
@@ -518,11 +660,16 @@ static void handle_event(App *app, XEvent *ev) {
             }
             break;
         case ButtonRelease:
+            if (app->settings_open) { settings_handle_release(app); break; }
             if (app->cfg_is_dragging)
                 XUngrabPointer(app->dpy, CurrentTime);
             app->cfg_is_dragging = 0;
             break;
         case MotionNotify:
+            if (app->settings_open) {
+                settings_handle_motion(app, ev->xmotion.x, ev->xmotion.y);
+                break;
+            }
             if (app->cfg_is_dragging) {
                 int rx, ry;
                 drain_motion(app, ev, &rx, &ry);
@@ -551,11 +698,17 @@ static void handle_event(App *app, XEvent *ev) {
         case KeyPress: {
             KeySym ks = XLookupKeysym(&ev->xkey, 0);
             if (ks == XK_space && app->pausable) toggle_pause(app);
+            else if ((ev->xkey.state & ControlMask) && (ks == XK_g || ks == XK_G))
+                settings_open_overlay(app, 1);
             break;
         }
         case ButtonPress: {
             int bx = ev->xbutton.x, by = ev->xbutton.y;
-            if (ev->xbutton.button == Button2) { stop_timer(app); return; }
+            if (ev->xbutton.button == Button2) {
+                if (!(app->lock && (app->state == STATE_RUNNING || app->state == STATE_PAUSED)))
+                    stop_timer(app);
+                return;
+            }
             if (ev->xbutton.button == Button3) { toggle_mini_fullscreen(app); return; }
             if (ev->xbutton.button == Button1) {
                 if (app->mini) {
@@ -630,7 +783,9 @@ static void handle_event(App *app, XEvent *ev) {
             }
             break;
         case ClientMessage:
-            if ((Atom)ev->xclient.data.l[0] == app->wm_delete) stop_timer(app);
+            if ((Atom)ev->xclient.data.l[0] == app->wm_delete &&
+                !(app->lock && (app->state == STATE_RUNNING || app->state == STATE_PAUSED)))
+                stop_timer(app);
             break;
         }
         return;
@@ -650,7 +805,16 @@ static void handle_event(App *app, XEvent *ev) {
             break;
         }
         case ButtonPress:
+            /* The volume slider lives at the bottom of the alert screen —
+             * clicking/dragging it must not also dismiss the alert. */
+            if (alert_vol_handle_click(app, i, ev->xbutton.x, ev->xbutton.y)) return;
             dismiss_alert(app); return;
+        case ButtonRelease:
+            alert_vol_handle_release(app);
+            return;
+        case MotionNotify:
+            alert_vol_handle_motion(app, i, ev->xmotion.x, ev->xmotion.y);
+            return;
         }
         return;
     }
@@ -676,6 +840,16 @@ static void do_config_tick(App *app) {
         if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
             if (app->cfg_win && app->state == STATE_CONFIG)
                 draw_help(app);
+            app->cfg_anim_last_ms = now_ms;
+        }
+        return;
+    }
+
+    if (app->sleep_preview_open) {
+        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
+        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
+            if (app->cfg_win && app->state == STATE_CONFIG)
+                draw_sleep_preview(app);
             app->cfg_anim_last_ms = now_ms;
         }
         return;
@@ -748,7 +922,16 @@ static void main_loop(App *app) {
 
 /* ── App initialization ────────────────────────────────── */
 
-static void signal_handler(int sig) { (void)sig; if (g_app) g_app->quit = 1; }
+/* While a locked timer is counting down, SIGINT/SIGTERM (e.g. from another
+ * terminal) must not be able to cancel it either — only SIGKILL, which no
+ * process can block, gets through. */
+static void signal_handler(int sig) {
+    (void)sig;
+    if (!g_app) return;
+    if (g_app->lock && (g_app->state == STATE_RUNNING || g_app->state == STATE_PAUSED))
+        return;
+    g_app->quit = 1;
+}
 
 static int app_init(App *app) {
     memset(app, 0, sizeof(*app));
@@ -777,7 +960,11 @@ static int app_init(App *app) {
     app->blink_ts   = ms_now();
     app->quote_idx = -1;
     app->quote_next_idx = -1;
+    app->settings_cat = -1;
+    app->settings_drag_field = -1;
     app->quote_cycle_ts = 0;
+    app->quote_mask_idx[0] = -1;
+    app->quote_mask_idx[1] = -1;
     app->cfg_last_wall_sec = 0;
 
     pthread_mutex_init(&app->audio_lock, NULL);
@@ -823,21 +1010,179 @@ static void print_usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s [time] [task] [options]\n\n"
         "Time formats: 25m  1h30m  45  30:00  1:30:00  u15:30  u1520\n"
-        "Switches (prefix):  d=shutdown  a=alert  f/r=fullscreen  p=pausable\n"
-        "Options: -m alert|shutdown  -p  -f  --theme NAME  --gl  -h\n"
+        "Switches (prefix):  d=shutdown  a=alert  f/r=fullscreen  p=pausable  l=lock input\n"
+        "Options: -m alert|shutdown  -p  -f  -l  --theme NAME  --gl  -h\n"
+        "Subcommand: %s test preparing|sleeping|waking|alarm|all  (audition sleep-mode audio)\n"
         "Example: %s 25m focus  |  %s u16:30 meeting  |  %s\n",
-        prog, prog, prog, prog);
+        prog, prog, prog, prog, prog);
+}
+
+/* ── `timer test` — foreground CLI audition of the procedurally
+ * generated sleep-mode phases (preparing/sleeping/waking), at the exact
+ * same SYSTEM volume the app itself sets for that phase (see
+ * set_system_volume() in audio.c — the one function in this whole
+ * program that ever touches your system volume). Reads the target
+ * percent straight out of g_config via config_load() (see config.c) —
+ * nothing here is a separate copy of those numbers.
+ *
+ * Usage:
+ *   timer test preparing|sleeping|waking|alarm
+ *   timer test all
+ */
+#define TEST_PHASE_SECONDS 30.0
+
+static int run_test_command(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s test preparing|sleeping|waking|alarm|all\n", argv[0]);
+        return 1;
+    }
+    config_load(NULL);
+
+    const char *phase = argv[2];
+    if (!strcmp(phase, "preparing")) {
+        play_test_phase_cli("preparing", (int)g_config.sleep_volume_preparing_percent, TEST_PHASE_SECONDS);
+    } else if (!strcmp(phase, "sleeping")) {
+        play_test_phase_cli("sleeping", (int)g_config.sleep_volume_sleeping_percent, TEST_PHASE_SECONDS);
+    } else if (!strcmp(phase, "waking")) {
+        play_test_phase_cli("waking", (int)g_config.sleep_volume_waking_percent, TEST_PHASE_SECONDS);
+    } else if (!strcmp(phase, "alarm")) {
+        play_test_phase_cli("alarm", (int)g_config.alarm_volume_min_percent, TEST_PHASE_SECONDS);
+    } else if (!strcmp(phase, "all")) {
+        play_test_phase_cli("preparing", (int)g_config.sleep_volume_preparing_percent, TEST_PHASE_SECONDS);
+        play_test_phase_cli("sleeping", (int)g_config.sleep_volume_sleeping_percent, TEST_PHASE_SECONDS);
+        play_test_phase_cli("waking", (int)g_config.sleep_volume_waking_percent, TEST_PHASE_SECONDS);
+    } else {
+        fprintf(stderr, "Usage: %s test preparing|sleeping|waking|alarm|all\n", argv[0]);
+        return 1;
+    }
+    return 0;
 }
 
 /* ── main ──────────────────────────────────────────────── */
 
+/* ── Physical-display auto-detection (for launching from SSH) ────────
+ * When DISPLAY isn't set (e.g. an SSH session), scan /proc for a
+ * process owned by us that has DISPLAY (and ideally XAUTHORITY) set —
+ * that's the running graphical session — and adopt those values. */
+static int find_display_from_procs(void) {
+    if (getenv("DISPLAY")) return 1;
+
+    uid_t uid = getuid();
+    DIR *d = opendir("/proc");
+    if (!d) return 0;
+
+    char found_display[64] = "", found_xauth[MAX_PATH_LEN] = "";
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        if (!isdigit((unsigned char)ent->d_name[0])) continue;
+
+        char path[300];
+        snprintf(path, sizeof(path), "/proc/%s", ent->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0 || st.st_uid != uid) continue;
+
+        snprintf(path, sizeof(path), "/proc/%s/environ", ent->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char buf[8192];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+
+        char disp[64] = "", xauth[MAX_PATH_LEN] = "";
+        for (char *p = buf; p < buf + n; ) {
+            size_t len = strlen(p);
+            if (!strncmp(p, "DISPLAY=", 8))
+                snprintf(disp, sizeof(disp), "%s", p + 8);
+            else if (!strncmp(p, "XAUTHORITY=", 11))
+                snprintf(xauth, sizeof(xauth), "%s", p + 11);
+            p += len + 1;
+        }
+        if (disp[0]) {
+            snprintf(found_display, sizeof(found_display), "%s", disp);
+            snprintf(found_xauth, sizeof(found_xauth), "%s", xauth);
+            break;
+        }
+    }
+    closedir(d);
+
+    if (!found_display[0]) return 0;
+    setenv("DISPLAY", found_display, 1);
+    if (found_xauth[0]) {
+        setenv("XAUTHORITY", found_xauth, 1);
+    } else {
+        const char *home = getenv("HOME");
+        if (home) {
+            char xa[MAX_PATH_LEN];
+            snprintf(xa, sizeof(xa), "%s/.Xauthority", home);
+            setenv("XAUTHORITY", xa, 1);
+        }
+    }
+    return 1;
+}
+
+/* ── Daemonize: fully detach from the invoking terminal/SSH session ── */
+static void daemonize(void) {
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); exit(1); }
+    if (pid > 0) exit(0);            /* parent returns control to the shell */
+
+    if (setsid() < 0) exit(1);
+
+    pid = fork();                    /* second fork: drop controlling tty */
+    if (pid < 0) exit(1);
+    if (pid > 0) exit(0);
+
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+        dup2(devnull, STDIN_FILENO);
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
+        if (devnull > STDERR_FILENO) close(devnull);
+    }
+    chdir("/");
+}
+
 int main(int argc, char **argv) {
     srand((unsigned)time(NULL));
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            print_usage(argv[0]);
+            return 0;
+        }
+    }
+
+    if (argc > 1 && !strcmp(argv[1], "test")) {
+        return run_test_command(argc, argv);
+    }
+
+    if (argc > 1 && !strcmp(argv[1], "/testsleep")) {
+        config_load(NULL);
+        char combined[MAX_INPUT] = "";
+        for (int i = 2; i < argc; i++) {
+            if (combined[0]) strncat(combined, " ", sizeof(combined)-strlen(combined)-1);
+            strncat(combined, argv[i], sizeof(combined)-strlen(combined)-1);
+        }
+        ParseResult pr; parse_time_input(combined, &pr);
+        if (pr.seconds <= 0) {
+            fprintf(stderr, "Error: invalid time '%s'\n", combined);
+            fprintf(stderr, "Usage: %s /testsleep <time>   e.g. /testsleep u6:30, /testsleep 8h\n", argv[0]);
+            return 1;
+        }
+        SleepPreviewData *d = sleep_build_preview(pr.seconds);
+        if (d) { sleep_print_preview(d, combined); free(d); }
+        return 0;
+    }
+
+    find_display_from_procs();
+    daemonize();
+
     App app;
     if (!app_init(&app)) return 1;
 
     char cli_time[MAX_INPUT] = "", cli_task[MAX_TASK] = "";
-    int  cli_mode = -1, cli_pausable = 0, cli_fullscreen = 0, cli_theme = -1;
+    int  cli_mode = -1, cli_pausable = 0, cli_fullscreen = 0, cli_lock = 0, cli_theme = -1;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -845,6 +1190,7 @@ int main(int argc, char **argv) {
         if (!strcmp(a, "--gl")) { app.use_gl = 1; continue; }
         if (!strcmp(a, "-p") || !strcmp(a, "--pausable"))   { cli_pausable   = 1; continue; }
         if (!strcmp(a, "-f") || !strcmp(a, "--fullscreen"))  { cli_fullscreen = 1; continue; }
+        if (!strcmp(a, "-l") || !strcmp(a, "--lock"))         { cli_lock       = 1; continue; }
         if ((!strcmp(a, "-m") || !strcmp(a, "--mode")) && i+1 < argc) {
             cli_mode = !strcmp(argv[++i], "shutdown") ? 1 : 0; continue;
         }
@@ -875,6 +1221,7 @@ int main(int argc, char **argv) {
     if (cli_theme >= 0)  app.theme_idx = cli_theme;
     if (cli_pausable)    app.pausable  = 1;
     if (cli_fullscreen)  app.mini      = 0;
+    if (cli_lock)        app.lock      = 1;
     if (cli_mode == 1)   app.mode      = MODE_SHUTDOWN;
     if (cli_mode == 0)   app.mode      = MODE_ALERT;
 
@@ -895,6 +1242,8 @@ int main(int argc, char **argv) {
         if (pr.sw_shutdown  && cli_mode < 0)    app.mode     = MODE_SHUTDOWN;
         if (pr.sw_fullscreen && !cli_fullscreen) app.mini     = 0;
         if (pr.sw_pausable   && !cli_pausable)   app.pausable = 1;
+        if (pr.sw_lock       && !cli_lock)       app.lock     = 1;
+        app.sleep_mode = pr.sw_sleep;
 
         Window r2, c2; int rx, ry, wx, wy; unsigned int msk;
         XQueryPointer(app.dpy, DefaultRootWindow(app.dpy), &r2, &c2, &rx, &ry, &wx, &wy, &msk);

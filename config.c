@@ -1,329 +1,401 @@
 /* config.c — user-tunable settings
  *
- * Loads ~/.config/timer_c/config.conf (or $XDG_CONFIG_HOME/timer_c/config.conf)
- * into the global `g_config`. The file uses simple `key = value` lines; `#`
- * starts a comment, blank lines are ignored. Every key has a documented
- * min/max range — out-of-range values are clamped and a warning is logged,
- * unknown keys are logged and skipped, the file itself is never rejected.
+ * No config file, on purpose: every setting is a plain value assigned
+ * directly to its g_config field below in config_load() — there's no
+ * separate DEFAULT_* constant to keep in sync, just the value, in place,
+ * next to the comment explaining it. To change something, edit the
+ * assigned value and rebuild — that's the whole "config system".
  *
- * If no config file exists yet, one is written out with every key set to
- * its default, each preceded by a comment block explaining what it does,
- * its min/max, and an example alternate value. That generated file is the
- * living documentation — CFG_FIELDS below is its single source of truth,
- * so the docs can never drift out of sync with what the program actually
- * reads.
+ * DUR("..") parses a duration string like "1h30m", "30m20s", "500ms",
+ * "2.4s", or a bare number (seconds) — see dur_sec() below. DUR_MS("..")
+ * is the same, rounded to whole milliseconds, for the tick (redraw
+ * interval) settings, which are stored as ints.
  *
- * Volume guarantee: alarm.volume_percent is the ONLY setting anywhere in
- * this program that changes your system/master output volume, and it is
- * only ever applied immediately before the alarm sound starts playing
- * (see ensure_volume() in audio.c, called solely from play_alert_sound()).
- * Nothing else — cues, ticks, UI — ever touches system volume.
+ * ONE volume model, ONE reference point — see the big note at the top of
+ * the Config struct in timer.h for the full explanation. Short version:
+ * every *_volume_percent field here (alarm_volume_min/max_percent,
+ * sleep_volume_preparing/sleeping/waking_percent) is your actual SYSTEM
+ * output level, 0-100%, with 100% = full system volume. There's no
+ * separate app-level/PCM gain anywhere — set_system_volume() in audio.c
+ * (the only thing in this whole program that ever touches your system
+ * volume) moves your actual speaker volume to the requested percent,
+ * instantly, up or down as needed, the moment each sound starts.
  */
 #include "timer.h"
 #include <stddef.h>
 
 Config g_config;
 
-typedef enum { CFG_DOUBLE, CFG_INT, CFG_BOOL } CfgType;
+/* ── Generic field accessor table ──────────────────────────────
+ * One entry per user-tunable Config field, so the Settings overlay
+ * (Ctrl+G, draw.c) can enumerate/display/edit every field without any
+ * per-field UI code, and so config_save()/config_load() stay in sync
+ * with the struct automatically — add a field here once and it shows
+ * up in the GUI, gets persisted, and gets restored, with no changes
+ * needed anywhere else. */
 
-typedef struct {
-    const char *key;
-    CfgType     type;
-    size_t      offset;
-    double      min, max;
-    double      def;
-    const char *example;
-    const char *doc;   /* may contain embedded '\n'; each line is prefixed with "# " */
-} CfgField;
+const CfgField CFG_FIELDS[] = {
+    /* key                              label                     category    type       min      max              offset */
+    {"alarm_volume_min_percent",  "Min volume (start)",      "Alarm",   CFG_F_DOUBLE, 0,    100,   offsetof(Config, alarm_volume_min_percent)},
+    {"alarm_volume_max_percent",  "Max volume (ramped)",     "Alarm",   CFG_F_DOUBLE, 0,    100,   offsetof(Config, alarm_volume_max_percent)},
+    {"alarm_ramp_seconds",        "Fade-in length (s)",      "Alarm",   CFG_F_DOUBLE, 0,    60,    offsetof(Config, alarm_ramp_seconds)},
+    {"alarm_period",              "Motif period (s)",        "Alarm",   CFG_F_DOUBLE, 0.2,  10,    offsetof(Config, alarm_period)},
+    {"alarm_period_min",          "Fastest period (s)",      "Alarm",   CFG_F_DOUBLE, 0.05, 10,    offsetof(Config, alarm_period_min)},
+    {"alarm_accel",               "Tempo acceleration",      "Alarm",   CFG_F_DOUBLE, 0,    5,     offsetof(Config, alarm_accel)},
+    {"alarm_aggro_seconds",       "Brightness ramp (s)",     "Alarm",   CFG_F_DOUBLE, 1,    600,   offsetof(Config, alarm_aggro_seconds)},
+    {"alarm_max_seconds",         "Auto-mute after (s)",     "Alarm",   CFG_F_DOUBLE, 10,   3600,  offsetof(Config, alarm_max_seconds)},
 
-#define OFS(field) offsetof(Config, field)
+    {"sleep_volume_preparing_percent", "Preparing volume",   "Sleep",   CFG_F_DOUBLE, 0,    100,   offsetof(Config, sleep_volume_preparing_percent)},
+    {"sleep_volume_sleeping_percent",  "Sleeping volume",    "Sleep",   CFG_F_DOUBLE, 0,    100,   offsetof(Config, sleep_volume_sleeping_percent)},
+    {"sleep_volume_waking_percent",    "Waking volume",      "Sleep",   CFG_F_DOUBLE, 0,    100,   offsetof(Config, sleep_volume_waking_percent)},
+    {"sleep_fade_seconds",             "Fade seconds",       "Sleep",   CFG_F_DOUBLE, 0,    10,    offsetof(Config, sleep_fade_seconds)},
 
-static const CfgField CFG_FIELDS[] = {
-    { "alarm.volume_percent", CFG_DOUBLE, OFS(alarm_volume_percent),
-      0, 100, DEFAULT_ALARM_VOLUME_PERCENT, "70",
-      "System output volume (%) applied right before the alarm sound\n"
-      "starts. This is the ONLY setting in the whole program that ever\n"
-      "changes your system/master volume; it is never touched at any\n"
-      "other time (not on launch, not for cues, not while idle)." },
+    {"cfg_w",        "Setup window width",   "Window", CFG_F_INT, 300, 2000, offsetof(Config, cfg_w)},
+    {"cfg_h",        "Setup window height",  "Window", CFG_F_INT, 300, 2000, offsetof(Config, cfg_h)},
+    {"mini_w",       "Mini width",           "Window", CFG_F_INT, 100, 1000, offsetof(Config, mini_w)},
+    {"mini_h_base",  "Mini height",          "Window", CFG_F_INT, 60,  600,  offsetof(Config, mini_h_base)},
+    {"mini_h_until", "Mini height (until)",  "Window", CFG_F_INT, 60,  600,  offsetof(Config, mini_h_until)},
+    {"mini_w_min",   "Mini min width",       "Window", CFG_F_INT, 80,  1000, offsetof(Config, mini_w_min)},
+    {"mini_h_min",   "Mini min height",      "Window", CFG_F_INT, 40,  600,  offsetof(Config, mini_h_min)},
+    {"resize_zone",  "Resize grab zone (px)","Window", CFG_F_INT, 4,   64,   offsetof(Config, resize_zone)},
 
-    { "alarm.ramp_seconds", CFG_DOUBLE, OFS(alarm_ramp_seconds),
-      0, 60, DEFAULT_ALARM_RAMP_SECONDS, "5",
-      "How many seconds the alarm takes to fade in from near-silent to\n"
-      "full volume once it starts. 0 = full volume immediately." },
+    {"tick_config_ms",      "Config idle (ms)",   "Timing", CFG_F_INT, 16, 5000, offsetof(Config, tick_config_ms)},
+    {"tick_config_anim_ms", "Config anim (ms)",   "Timing", CFG_F_INT, 8,  1000, offsetof(Config, tick_config_anim_ms)},
+    {"tick_run_ms",         "Running (ms)",       "Timing", CFG_F_INT, 16, 5000, offsetof(Config, tick_run_ms)},
+    {"tick_last10_ms",      "Last 10s (ms)",      "Timing", CFG_F_INT, 16, 1000, offsetof(Config, tick_last10_ms)},
+    {"tick_paused_ms",      "Paused (ms)",        "Timing", CFG_F_INT, 16, 5000, offsetof(Config, tick_paused_ms)},
+    {"tick_alert_ms",       "Alert (ms)",         "Timing", CFG_F_INT, 8,  1000, offsetof(Config, tick_alert_ms)},
 
-    { "alarm.period_seconds", CFG_DOUBLE, OFS(alarm_period),
-      0.2, 10, DEFAULT_ALARM_PERIOD, "3.0",
-      "Base length, in seconds, of one repeat of the alarm's musical\n"
-      "motif before the tempo starts accelerating." },
-
-    { "alarm.period_min_seconds", CFG_DOUBLE, OFS(alarm_period_min),
-      0.05, 10, DEFAULT_ALARM_PERIOD_MIN, "1.0",
-      "The fastest (shortest) the motif period is allowed to ramp down\n"
-      "to as the alarm gets more urgent. Must be <= alarm.period_seconds\n"
-      "(it is clamped down to it automatically if not)." },
-
-    { "alarm.accel", CFG_DOUBLE, OFS(alarm_accel),
-      0, 5, DEFAULT_ALARM_ACCEL, "0.1",
-      "How fast the alarm's tempo ramps up, in period-speedup per\n"
-      "second of alerting. 0 = tempo never accelerates." },
-
-    { "alarm.aggro_seconds", CFG_DOUBLE, OFS(alarm_aggro_seconds),
-      1, 600, DEFAULT_ALARM_AGGRO_SECONDS, "45",
-      "Seconds for the alarm's loudness/brightness to build from its\n"
-      "starting level up to full intensity." },
-
-    { "alarm.max_seconds", CFG_DOUBLE, OFS(alarm_max_seconds),
-      10, 3600, DEFAULT_ALARM_MAX_SECONDS, "300",
-      "Auto-mute the alarm after this many seconds if nobody dismisses\n"
-      "it. Prevents it from ringing forever when you're away." },
-
-    { "window.config_width", CFG_INT, OFS(cfg_w),
-      300, 2000, DEFAULT_CFG_W, "560",
-      "Width in pixels of the config (setup) window." },
-
-    { "window.config_height", CFG_INT, OFS(cfg_h),
-      300, 2000, DEFAULT_CFG_H, "820",
-      "Height in pixels of the config (setup) window." },
-
-    { "window.mini_width", CFG_INT, OFS(mini_w),
-      100, 1000, DEFAULT_MINI_W, "300",
-      "Default width in pixels of the small floating countdown window." },
-
-    { "window.mini_height", CFG_INT, OFS(mini_h_base),
-      60, 600, DEFAULT_MINI_H_BASE, "150",
-      "Default height in pixels of the small floating countdown window\n"
-      "when it has no 'until' clock shown." },
-
-    { "window.mini_height_with_until", CFG_INT, OFS(mini_h_until),
-      60, 600, DEFAULT_MINI_H_UNTIL, "190",
-      "Default height in pixels of the mini window when it also shows\n"
-      "an 'until HH:MM' clock." },
-
-    { "window.mini_min_width", CFG_INT, OFS(mini_w_min),
-      80, 1000, DEFAULT_MINI_W_MIN, "150",
-      "Smallest width the mini window can be resized down to. Clamped\n"
-      "to window.mini_width if larger." },
-
-    { "window.mini_min_height", CFG_INT, OFS(mini_h_min),
-      40, 600, DEFAULT_MINI_H_MIN, "90",
-      "Smallest height the mini window can be resized down to. Clamped\n"
-      "to window.mini_height if larger." },
-
-    { "window.resize_zone", CFG_INT, OFS(resize_zone),
-      4, 64, DEFAULT_RESIZE_ZONE, "16",
-      "Size in pixels of the draggable corner hit-zone used to resize\n"
-      "the mini window." },
-
-    { "tick.config_ms", CFG_INT, OFS(tick_config_ms),
-      16, 5000, DEFAULT_TICK_CONFIG_MS, "250",
-      "Minimum milliseconds between redraws while the config window is\n"
-      "idle (not animating). Lower = smoother, higher = less CPU." },
-
-    { "tick.config_anim_ms", CFG_INT, OFS(tick_config_anim_ms),
-      8, 1000, DEFAULT_TICK_CONFIG_ANIM_MS, "33",
-      "Milliseconds between redraws while the config window's clock/\n"
-      "quote animation is running (~1000/fps). 16 ~= 60fps, 33 ~= 30fps." },
-
-    { "tick.run_ms", CFG_INT, OFS(tick_run_ms),
-      16, 5000, DEFAULT_TICK_TIMER_RUN_MS, "500",
-      "Milliseconds between redraws while a timer is running normally." },
-
-    { "tick.last10_ms", CFG_INT, OFS(tick_last10_ms),
-      16, 1000, DEFAULT_TICK_TIMER_LAST10_MS, "50",
-      "Milliseconds between redraws during the final 10 seconds of a\n"
-      "running timer, for a smoother countdown." },
-
-    { "tick.paused_ms", CFG_INT, OFS(tick_paused_ms),
-      16, 5000, DEFAULT_TICK_TIMER_PAUSED_MS, "500",
-      "Milliseconds between redraws while a timer is paused." },
-
-    { "tick.alert_ms", CFG_INT, OFS(tick_alert_ms),
-      8, 1000, DEFAULT_TICK_ALERT_MS, "33",
-      "Milliseconds between redraws while the alarm is alerting\n"
-      "(controls the beat-synced strobe smoothness, ~1000/fps)." },
-
-    { "startup.theme", CFG_INT, OFS(default_theme),
-      -1, N_THEMES - 1, DEFAULT_THEME_IDX, "0",
-      "Theme used on launch: -1 picks one at random, otherwise an index\n"
-      "0..N. Themes are generated fresh each run (see generate_themes()\n"
-      "in draw.c), so a fixed index still means a different color each\n"
-      "launch — it only pins which of the N freshly-generated palettes." },
-
-    { "startup.pausable", CFG_BOOL, OFS(default_pausable),
-      0, 1, DEFAULT_PAUSABLE, "1",
-      "Whether new timers are pausable by default (0 or 1). Same effect\n"
-      "as always passing -p on the command line." },
-
-    { "startup.fullscreen", CFG_BOOL, OFS(default_fullscreen),
-      0, 1, DEFAULT_FULLSCREEN, "1",
-      "Whether new timers start in fullscreen by default (0 or 1). Same\n"
-      "effect as always passing -f on the command line." },
+    {"default_theme",      "Default theme (-1=random)", "Startup", CFG_F_INT,  -1, N_THEMES - 1, offsetof(Config, default_theme)},
+    {"default_pausable",   "Pausable by default",       "Startup", CFG_F_BOOL, 0,  1,            offsetof(Config, default_pausable)},
+    {"default_fullscreen", "Fullscreen by default",     "Startup", CFG_F_BOOL, 0,  1,            offsetof(Config, default_fullscreen)},
 };
+const int N_CFG_FIELDS = (int)(sizeof(CFG_FIELDS) / sizeof(CFG_FIELDS[0]));
 
-#define N_CFG_FIELDS ((int)(sizeof(CFG_FIELDS) / sizeof(CFG_FIELDS[0])))
+double cfg_field_get(int idx) {
+    if (idx < 0 || idx >= N_CFG_FIELDS) return 0.0;
+    const CfgField *f = &CFG_FIELDS[idx];
+    void *p = (char *)&g_config + f->offset;
+    if (f->type == CFG_F_DOUBLE) return *(double *)p;
+    return (double)(*(int *)p);
+}
 
-static double *dptr(const CfgField *f) { return (double *)((char *)&g_config + f->offset); }
-static int    *iptr(const CfgField *f) { return (int    *)((char *)&g_config + f->offset); }
-
-static void field_set(const CfgField *f, double v) {
+void cfg_field_set(int idx, double v) {
+    if (idx < 0 || idx >= N_CFG_FIELDS) return;
+    const CfgField *f = &CFG_FIELDS[idx];
     if (v < f->min) v = f->min;
     if (v > f->max) v = f->max;
-    if (f->type == CFG_DOUBLE) *dptr(f) = v;
-    else                       *iptr(f) = (int)(v + (v >= 0 ? 0.5 : -0.5));
+    void *p = (char *)&g_config + f->offset;
+    if (f->type == CFG_F_DOUBLE) *(double *)p = v;
+    else                         *(int *)p = (int)(v + (v >= 0 ? 0.5 : -0.5));
 }
 
-static void set_defaults(void) {
-    memset(&g_config, 0, sizeof(g_config));
-    for (int i = 0; i < N_CFG_FIELDS; i++)
-        field_set(&CFG_FIELDS[i], CFG_FIELDS[i].def);
-}
-
-/* Resolve ~/.config/timer_c/config.conf, honoring $XDG_CONFIG_HOME.
- * Creates the containing directory if it doesn't exist yet. */
-static void resolve_config_path(char *out, int out_sz) {
-    const char *xdg = getenv("XDG_CONFIG_HOME");
-    char base[MAX_PATH_LEN];
-    if (xdg && xdg[0]) {
-        snprintf(base, sizeof(base), "%s", xdg);
-    } else {
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
-        snprintf(base, sizeof(base), "%s/.config", home);
-    }
-    char dir[MAX_PATH_LEN];
-    snprintf(dir, sizeof(dir), "%s/timer_c", base);
-    mkdir(base, 0755);
-    mkdir(dir, 0755);
+static void config_path(char *out, int out_sz) {
+    char dir[MAX_PATH_LEN - 16];
+    get_config_dir(dir, sizeof(dir));
     snprintf(out, out_sz, "%s/config.conf", dir);
 }
 
-/* Write the fully-documented default config file — this doubles as the
- * example/reference doc for every option. */
-static void write_example_file(const char *path) {
-    FILE *fp = fopen(path, "w");
-    if (!fp) return;
+/* Writes every live g_config value (via CFG_FIELDS) back to the same
+ * config.conf file config_load() reads below — no separate/parallel
+ * config file. Called immediately by every Settings-overlay edit
+ * (draw.c) so changes survive a restart right away. */
+void config_save(void) {
+    char path[MAX_PATH_LEN];
+    config_path(path, sizeof(path));
 
-    fprintf(fp,
-        "# Timer_C configuration file\n"
-        "#\n"
-        "# Format: key = value   (one per line)\n"
-        "#   - Lines starting with '#' are comments.\n"
-        "#   - Blank lines are ignored.\n"
-        "#   - Unknown keys are logged and ignored.\n"
-        "#   - Out-of-range values are clamped to the nearest valid value\n"
-        "#     and a warning is logged.\n"
-        "#   - This file is only read at startup; restart the app to pick\n"
-        "#     up changes.\n"
-        "#\n"
-        "# Every key below is shown set to its default. Uncomment the\n"
-        "# \"Example\" line (or just edit the value) to change it.\n"
-        "\n");
+    FILE *f = fopen(path, "w");
+    if (!f) return;
 
+    fprintf(f, "# Timer_C configuration — written by the in-app Settings overlay (Ctrl+G).\n");
+    fprintf(f, "# Format: key = value   Edit by hand or through the app; either is fine.\n\n");
+    const char *cur_cat = NULL;
     for (int i = 0; i < N_CFG_FIELDS; i++) {
-        const CfgField *f = &CFG_FIELDS[i];
-        fprintf(fp, "# %s\n", f->key);
-        /* doc, line by line, each prefixed with "#   " */
-        const char *p = f->doc;
-        while (p && *p) {
-            const char *nl = strchr(p, '\n');
-            int len = nl ? (int)(nl - p) : (int)strlen(p);
-            fprintf(fp, "#   %.*s\n", len, p);
-            p = nl ? nl + 1 : NULL;
+        const CfgField *cf = &CFG_FIELDS[i];
+        if (!cur_cat || strcmp(cur_cat, cf->category) != 0) {
+            cur_cat = cf->category;
+            fprintf(f, "\n# ── %s ──\n", cur_cat);
         }
-        if (f->type == CFG_BOOL)
-            fprintf(fp, "#   Range: 0 or 1   Default: %d\n", (int)f->def);
-        else if (f->type == CFG_INT)
-            fprintf(fp, "#   Range: %d to %d   Default: %d\n",
-                    (int)f->min, (int)f->max, (int)f->def);
+        double v = cfg_field_get(i);
+        if (cf->type == CFG_F_DOUBLE)
+            fprintf(f, "%s = %.6g\n", cf->key, v);
         else
-            fprintf(fp, "#   Range: %g to %g   Default: %g\n", f->min, f->max, f->def);
-        fprintf(fp, "#   Example: %s = %s\n", f->key, f->example);
-
-        if (f->type == CFG_DOUBLE)
-            fprintf(fp, "%s = %g\n\n", f->key, f->def);
-        else
-            fprintf(fp, "%s = %d\n\n", f->key, (int)f->def);
+            fprintf(f, "%s = %d\n", cf->key, (int)v);
     }
-
-    fclose(fp);
+    fclose(f);
 }
 
-static char *trim(char *s) {
-    while (*s == ' ' || *s == '\t') s++;
-    char *end = s + strlen(s);
-    while (end > s && (end[-1] == ' ' || end[-1] == '\t' ||
-                        end[-1] == '\r' || end[-1] == '\n')) end--;
-    *end = '\0';
-    return s;
-}
+/* Loads config.conf (if present) over the hardcoded defaults already
+ * assigned earlier in config_load() — unknown keys are ignored,
+ * malformed lines are skipped, values are clamped to each field's
+ * range via cfg_field_set(). Missing file just means "use the
+ * defaults", so a fresh checkout/install needs nothing extra. */
+static void config_load_file(void) {
+    char path[MAX_PATH_LEN];
+    config_path(path, sizeof(path));
 
-static void parse_file(App *app, const char *path) {
-    FILE *fp = fopen(path, "r");
-    if (!fp) return;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
 
     char line[512];
-    int lineno = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        lineno++;
-        char *s = line;
-        char *hash = strchr(s, '#');
-        if (hash) *hash = '\0';
-        s = trim(s);
-        if (!*s) continue;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p == '#' || *p == '\0' || *p == '\n') continue;
 
-        char *eq = strchr(s, '=');
-        if (!eq) {
-            app_log(app, "WARN", "config.conf:%d: missing '=', ignoring line", lineno);
-            continue;
-        }
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
         *eq = '\0';
-        char *key = trim(s);
-        char *val = trim(eq + 1);
-        if (!*key || !*val) continue;
+        char *key = p;
+        char *val = eq + 1;
 
-        const CfgField *f = NULL;
-        for (int i = 0; i < N_CFG_FIELDS; i++)
-            if (!strcasecmp(CFG_FIELDS[i].key, key)) { f = &CFG_FIELDS[i]; break; }
-        if (!f) {
-            app_log(app, "WARN", "config.conf:%d: unknown key '%s', ignoring", lineno, key);
-            continue;
-        }
+        /* Trim trailing whitespace off the key. */
+        char *ke = key + strlen(key);
+        while (ke > key && isspace((unsigned char)ke[-1])) *--ke = '\0';
 
-        char *endp = NULL;
-        double v = strtod(val, &endp);
-        if (endp == val) {
-            app_log(app, "WARN", "config.conf:%d: '%s' is not a number, ignoring", lineno, val);
-            continue;
+        while (isspace((unsigned char)*val)) val++;
+        char *ve = val + strlen(val);
+        while (ve > val && isspace((unsigned char)ve[-1])) *--ve = '\0';
+
+        for (int i = 0; i < N_CFG_FIELDS; i++) {
+            if (!strcmp(CFG_FIELDS[i].key, key)) {
+                cfg_field_set(i, atof(val));
+                break;
+            }
         }
-        if (v < f->min || v > f->max) {
-            double clamped = v < f->min ? f->min : f->max;
-            app_log(app, "WARN", "config.conf:%d: %s = %g out of range [%g, %g], clamped to %g",
-                    lineno, key, v, f->min, f->max, clamped);
-        }
-        field_set(f, v);
     }
-    fclose(fp);
+    fclose(f);
+}
+
+/* Parses a duration string into seconds: chained "<number><unit>" pairs
+ * (h=hours, m=minutes, s=seconds, ms=milliseconds), e.g. "1h30m",
+ * "30m20s", "500ms", "2.4s". A bare number with no unit is seconds
+ * ("10" == "10s"). Unrecognized/empty input yields 0. */
+static double dur_sec(const char *s) {
+    double total = 0.0;
+    const char *p = s;
+    while (*p) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+
+        char *end;
+        double val = strtod(p, &end);
+        if (end == p) break;   /* no number here — stop parsing */
+        p = end;
+
+        char unit[4] = {0};
+        int ui = 0;
+        while (isalpha((unsigned char)*p) && ui < 3) unit[ui++] = *p++;
+
+        if (!strcmp(unit, "ms"))      total += val / 1000.0;
+        else if (!strcmp(unit, "h"))  total += val * 3600.0;
+        else if (!strcmp(unit, "m"))  total += val * 60.0;
+        else                          total += val;   /* "s" or no unit */
+    }
+    return total;
+}
+#define DUR(s)    dur_sec(s)
+#define DUR_MS(s) ((int)(dur_sec(s) * 1000.0 + 0.5))
+
+/* "config" next to the running binary (not ~/.config) — e.g.
+ * /mnt/MKSpace/TOOLS/Timer_C/config — creating it if it doesn't exist
+ * yet. Used for the sleep-mode custom audio folders (see audio.c).
+ * Falls back to "./config" relative to the current directory if the
+ * binary's own path can't be resolved (e.g. /proc unavailable). */
+void get_config_dir(char *out, int out_sz) {
+    char exe[MAX_PATH_LEN];
+    char dir[MAX_PATH_LEN + 16];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        char *slash = strrchr(exe, '/');
+        if (slash) *slash = '\0'; else snprintf(exe, sizeof(exe), ".");
+        snprintf(dir, sizeof(dir), "%s/config", exe);
+    } else {
+        snprintf(dir, sizeof(dir), "./config");
+    }
+    mkdir(dir, 0755);
+    snprintf(out, out_sz, "%s", dir);
 }
 
 void config_load(App *app) {
-    set_defaults();
+    (void)app;
+    memset(&g_config, 0, sizeof(g_config));
 
-    char path[MAX_PATH_LEN];
-    resolve_config_path(path, sizeof(path));
+    /* ── Alarm volume ────────────────────────────────────────
+     * System volume the alarm ramps from/to — see set_system_volume()
+     * in audio.c. */
 
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        write_example_file(path);
-        app_log(app, "INFO", "wrote default config to %s", path);
-    } else {
-        parse_file(app, path);
-    }
+    /* Range: 0-100%  System volume set the instant the alarm starts. Why:
+     * the alarm needs to be heard even if the system was left
+     * muted/quiet, so it's the one sound in this program allowed to move
+     * your volume UP on its own; every other sound only ever sets volume
+     * to its own configured level while it's the one playing. */
+    g_config.alarm_volume_min_percent = 40;
 
-    /* alarm.period_min can never exceed alarm.period */
+    /* Range: 0-100%  System volume the alarm ramps up to by the time its
+     * fade-in (alarm_ramp_seconds) completes — synced with the PCM
+     * loudness ramp, so the room actually gets louder as the tone does.
+     * Clamped up to the min below if set lower than it. */
+    g_config.alarm_volume_max_percent = 80;
+
+    /* ── Alarm: sound/timing ────────────────────────────────
+     * Everything else about the alarm — its own tempo and how long it
+     * runs — independent of the volume settings above. */
+
+    /* Range: 0-60s  How long the alarm takes to fade in from near-silent
+     * to full volume once it starts. "0s" = full volume immediately.
+     * Why: waking up (or being startled) to a sudden loud tone is
+     * unpleasant; a ramp gives you a moment to react first. */
+    g_config.alarm_ramp_seconds = DUR("10s");
+
+    /* Range: 0.2-10s  Base length of one repeat of the alarm's musical
+     * motif, before the tempo starts accelerating. Why: sets the
+     * starting "urgency" — shorter means it opens faster/busier. */
+    g_config.alarm_period = DUR("2.4s");
+
+    /* Range: 0.05-10s  The fastest (shortest) the motif period is
+     * allowed to ramp down to as the alarm gets more urgent. Clamped
+     * down to alarm_period below if set higher than it (a faster floor
+     * than the starting speed makes no sense). */
+    g_config.alarm_period_min = DUR("1.2s");
+
+    /* Range: 0-5  How fast the alarm's tempo ramps up, in period-speedup
+     * per second of alerting. 0 = tempo never accelerates, stays at
+     * alarm_period forever. Why: an alarm that gets more insistent the
+     * longer it's ignored is more likely to actually be noticed. */
+    g_config.alarm_accel = 0.015;
+
+    /* Range: 1-600s  Seconds for the alarm's loudness/brightness to
+     * build from its starting level up to full intensity (separate from
+     * the tempo ramp above — this affects timbre/volume, not speed). */
+    g_config.alarm_aggro_seconds = DUR("1m20s");
+
+    /* Range: 10-3600s  Auto-mute the alarm after this long if nobody
+     * dismisses it. Why: prevents it ringing forever (and annoying
+     * everyone nearby) if you're away when the timer ends. */
+    g_config.alarm_max_seconds = DUR("2m");
+
+    /* ── Window sizing (pixels) ───────────────────────────────
+     * All ints; ranges are sanity bounds against silly/broken values,
+     * not meaningfully enforced beyond "don't be absurd". */
+
+    g_config.cfg_w        = 500;  /* 300-2000  width of the config (setup) window */
+    g_config.cfg_h        = 760;  /* 300-2000  height of the config (setup) window */
+    g_config.mini_w       = 250;  /* 100-1000  default width of the floating countdown ("mini") window */
+    g_config.mini_h_base  = 130;  /* 60-600    default mini-window height with no "until HH:MM" clock shown */
+    g_config.mini_h_until = 172;  /* 60-600    default mini-window height with an "until HH:MM" clock shown */
+    g_config.mini_w_min   = 130;  /* 80-1000   smallest width the mini window can be resized down to */
+    g_config.mini_h_min   = 72;   /* 40-600    smallest height the mini window can be resized down to */
+
+    /* Range: 4-64px  Size of the draggable corner hit-zone used to
+     * resize the mini window. Why: too small and it's hard to grab with
+     * a mouse; too large and it eats into normal click area. */
+    g_config.resize_zone = 22;
+
+    /* ── Tick pacing ───────────────────────────────────────────
+     * Lower = smoother animation, higher = less CPU/redraw work while
+     * idle. These are redraw intervals, not timer accuracy — the
+     * countdown itself is computed from a monotonic clock regardless of
+     * tick rate. */
+
+    /* Range: 16ms-5s  Minimum time between redraws while the config
+     * window is idle (not animating). */
+    g_config.tick_config_ms = DUR_MS("500ms");
+
+    /* Range: 8-1000ms  Redraw interval while the config window's
+     * clock/quote animation or cyber background is running (16ms ~
+     * 60fps). */
+    g_config.tick_config_anim_ms = DUR_MS("16ms");
+
+    /* Range: 16ms-5s  Redraw interval while a timer is running normally
+     * (not in its last 10s). */
+    g_config.tick_run_ms = DUR_MS("1s");
+
+    /* Range: 16-1000ms  Redraw interval during the final 10 seconds of a
+     * running timer, for a smoother-looking countdown right before it
+     * ends. */
+    g_config.tick_last10_ms = DUR_MS("100ms");
+
+    /* Range: 16ms-5s  Redraw interval while a timer is paused. */
+    g_config.tick_paused_ms = DUR_MS("1s");
+
+    /* Range: 8-1000ms  Redraw interval while the alarm is alerting —
+     * controls how smooth the beat-synced flash/strobe looks (16ms ~
+     * 60fps). */
+    g_config.tick_alert_ms = DUR_MS("16ms");
+
+    /* ── Startup defaults ─────────────────────────────────────
+     * What a freshly launched timer defaults to before you type anything
+     * or pass CLI flags; CLI flags (-p, -f, etc.) override these for
+     * that one run. */
+
+    /* Range: -1..N_THEMES-1  Theme index used on launch; -1 = random.
+     * Themes are regenerated fresh every run (see generate_themes() in
+     * draw.c) from the current time of day, so even a fixed index still
+     * looks different each launch — it only pins *which* of the freshly
+     * generated palettes to use. */
+    g_config.default_theme = -1;
+
+    /* Whether new timers are pausable by default. Same effect as always
+     * passing -p on the command line. */
+    g_config.default_pausable = 0;
+
+    /* Whether new timers start in fullscreen by default. Same effect as
+     * always passing -f on the command line. */
+    g_config.default_fullscreen = 0;
+
+    /* ── Sleep mode: volume ────────────────────────────────────
+     * System volume set the instant each procedurally-generated phase
+     * starts, and periodically re-asserted while it plays — see
+     * sleep_control_thread() in audio.c. */
+
+    /* Range: 0-100%  System volume for the "preparing" phase (rain) —
+     * plays once as you're falling asleep. Kept the lowest and steadiest
+     * of the three: it should never spike. */
+    g_config.sleep_volume_preparing_percent = 50;
+
+    /* Range: 0-100%  System volume for the "sleeping" phase (slow
+     * drone), looped for the bulk of the timer. */
+    g_config.sleep_volume_sleeping_percent = 12;
+
+    /* Range: 0-100%  System volume for the "waking" phase (rising
+     * chime) — replaces the usual alarm siren in sleep mode, looping
+     * until dismissed. */
+    g_config.sleep_volume_waking_percent = 50;
+
+    /* Range: roughly 0.3-5s is sane  Fade in/out window used at the
+     * start of every sleep-mode audio segment (custom file or generated
+     * fallback) and at every phase cut (e.g. preparing/sleeping trimmed
+     * short to make room for waking) — a click-free envelope on the PCM
+     * itself, separate from (and much shorter than) the system-volume
+     * change between phases above. Why: near 0 would make cuts
+     * click/pop; too large and phase transitions feel sluggish or
+     * overlap awkwardly. */
+    g_config.sleep_fade_seconds = DUR("1.5s");
+
+    /* Override any of the above with values persisted from a previous
+     * run's Settings overlay (Ctrl+G) — see config_save()/CFG_FIELDS
+     * above. No file present just means "use the defaults set above". */
+    config_load_file();
+
+    /* ── Cross-field sanity fixups ────────────────────────────
+     * Guards against a hand-edit above making two related values
+     * contradict each other; a plain clamp, not user-facing validation
+     * (there's no file input to validate here anymore). */
+
+    /* alarm_volume_max_percent can never be below the min — the system
+     * volume ramps UP to it, so a ceiling below the starting point is
+     * nonsensical. */
+    if (g_config.alarm_volume_max_percent < g_config.alarm_volume_min_percent)
+        g_config.alarm_volume_max_percent = g_config.alarm_volume_min_percent;
+
+    /* alarm_period_min can never exceed alarm_period — the tempo ramps
+     * DOWN to it, so a floor above the starting point is nonsensical. */
     if (g_config.alarm_period_min > g_config.alarm_period)
         g_config.alarm_period_min = g_config.alarm_period;
 
-    /* min sizes can never exceed their corresponding default sizes */
+    /* A resize-down minimum can never exceed the size it's a minimum of. */
     if (g_config.mini_w_min > g_config.mini_w) g_config.mini_w_min = g_config.mini_w;
     if (g_config.mini_h_min > g_config.mini_h_base) g_config.mini_h_min = g_config.mini_h_base;
 }

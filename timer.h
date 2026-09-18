@@ -16,6 +16,7 @@
 #include <X11/extensions/Xinerama.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/Xrender.h>
+#include "lock.h"
 
 #ifdef USE_GL
 #include <GL/gl.h>
@@ -39,6 +40,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sqlite3.h>
+#include <dirent.h>
 
 /* ── Constants ─────────────────────────────────────────── */
 
@@ -75,66 +77,62 @@
 #define ALARM_ONSETS  { 0.00f, 0.40f, 0.80f, 1.20f, 1.65f, 2.05f }
 
 /* All other tunables below (tick pacing, alarm tempo/volume/duration,
- * window sizing) live in the Config struct (see "config.c" further
- * down) and are user-adjustable via ~/.config/timer_c/config.conf.
- * These DEFAULT_* constants are only the built-in fallback values that
- * config.c seeds the config struct with; nothing else should reference
- * them directly — use g_config.* instead. */
-#define DEFAULT_TICK_CONFIG_MS        500
-#define DEFAULT_TICK_CONFIG_ANIM_MS    16
-#define DEFAULT_TICK_TIMER_RUN_MS    1000
-#define DEFAULT_TICK_TIMER_LAST10_MS  100
-#define DEFAULT_TICK_TIMER_PAUSED_MS 1000
-#define DEFAULT_TICK_ALERT_MS          16
-
-#define DEFAULT_ALARM_VOLUME_PERCENT  40.0
-#define DEFAULT_ALARM_RAMP_SECONDS    10.0
-#define DEFAULT_ALARM_PERIOD           2.4
-#define DEFAULT_ALARM_ACCEL            0.015
-#define DEFAULT_ALARM_PERIOD_MIN       1.20
-#define DEFAULT_ALARM_AGGRO_SECONDS   80.0
-#define DEFAULT_ALARM_MAX_SECONDS    120.0
-
-#define DEFAULT_CFG_W   500
-#define DEFAULT_CFG_H   760
-
-#define DEFAULT_MINI_W        250
-#define DEFAULT_MINI_H_BASE   130
-#define DEFAULT_MINI_H_UNTIL  172
-#define DEFAULT_MINI_W_MIN    130
-#define DEFAULT_MINI_H_MIN     72
-
-#define DEFAULT_RESIZE_ZONE    22
-
-#define DEFAULT_THEME_IDX      -1   /* -1 = random */
-#define DEFAULT_PAUSABLE        0
-#define DEFAULT_FULLSCREEN      0
+ * window sizing) live in the Config struct, filled in by config_load()
+ * in config.c. There is no config file — every default constant is
+ * defined right there in config.c, next to the field it initializes;
+ * to change a value, edit it there and rebuild. Nothing should
+ * reference a default constant directly — use g_config.* instead. */
 
 /* ── Config (user-tunable settings) ────────────────────────
- * Loaded at startup by config.c from ~/.config/timer_c/config.conf
- * (or $XDG_CONFIG_HOME/timer_c/config.conf). Every field has a
- * documented min/max enforced by config.c — see config.c's CFG_FIELDS
- * table for the authoritative ranges, docs and examples; that same
- * table is what generates the on-disk example/default file. Access
- * the live values through the global g_config; nothing should read
- * the DEFAULT_* macros above directly except config.c itself. */
+ * No config file — config_load() in config.c assigns every field below
+ * directly. Access the live values through the global g_config.
+ *
+ * ONE kind of "volume", one reference point: every *_volume_percent
+ * field below is your actual SYSTEM/speaker output level, 0-100%, with
+ * 100% meaning "full system volume" — never a separate PCM/app-level
+ * gain layered on top of it. Sounds themselves always play at their
+ * natural full level; set_system_volume() (audio.c) is what actually
+ * gets you the requested loudness, by moving your system volume up or
+ * down — instantly, automatically, in whichever direction is needed —
+ * the moment a phase/alarm starts. See set_system_volume() for the
+ * mechanism (pactl, per-sink, unmuting as it goes). */
 typedef struct {
-    /* Alarm sound */
-    double alarm_volume_percent;  /* system volume set right before the alarm plays */
-    double alarm_ramp_seconds;    /* fade-in length of the alarm volume            */
+    /* ── Alarm volume ────────────────────────────────────────
+     * System volume the alarm ramps from/to as it fades in — see
+     * alarm_ramp_seconds below for how long that takes. */
+    double alarm_volume_min_percent; /* system volume set the instant the alarm starts */
+    double alarm_volume_max_percent; /* system volume ramped to by the end of the fade-in */
+
+    /* ── Alarm: sound/timing ────────────────────────────────
+     * Everything else about the alarm — its own tempo and how long it
+     * runs — independent of the volume settings above. */
+    double alarm_ramp_seconds;    /* fade-in length of the volume ramp above       */
     double alarm_period;          /* base seconds per motif repeat                 */
     double alarm_period_min;      /* fastest (shortest) period the tempo ramps to  */
     double alarm_accel;           /* tempo increase per second of alerting         */
     double alarm_aggro_seconds;   /* seconds for brightness/level to ramp 0→1      */
     double alarm_max_seconds;     /* auto-mute the alarm after this long           */
 
-    /* Window sizing (pixels) */
+    /* ── Sleep mode: volume ──────────────────────────────────
+     * System volume set the instant each procedurally-generated phase
+     * (preparing/sleeping/waking) starts playing, and periodically
+     * re-asserted while it runs — see audio.c's sleep_control_thread(). */
+    double sleep_volume_preparing_percent;
+    double sleep_volume_sleeping_percent;
+    double sleep_volume_waking_percent;
+
+    /* ── Sleep mode: timing ──────────────────────────────────
+     * Fade in/out window used at every cut/transition between phases. */
+    double sleep_fade_seconds;
+
+    /* ── Window sizing (pixels) ─────────────────────────────── */
     int cfg_w, cfg_h;
     int mini_w, mini_h_base, mini_h_until;
     int mini_w_min, mini_h_min;
     int resize_zone;
 
-    /* Tick pacing (milliseconds) */
+    /* ── Tick pacing (milliseconds) ───────────────────────────
+     * Redraw intervals, not timer accuracy. */
     int tick_config_ms;
     int tick_config_anim_ms;
     int tick_run_ms;
@@ -142,13 +140,34 @@ typedef struct {
     int tick_paused_ms;
     int tick_alert_ms;
 
-    /* Startup defaults */
+    /* ── Startup defaults ─────────────────────────────────────
+     * CLI flags (-p, -f, --theme) override these for that one run. */
     int default_theme;     /* -1 = random, else 0..N_THEMES-1 */
     int default_pausable;  /* 0/1 */
     int default_fullscreen;/* 0/1 */
 } Config;
 
 extern Config g_config;
+
+/* ── Generic config-field accessor table (config.c) ────────────────
+ * Backs the Settings overlay (Ctrl+G, draw.c): one entry per tunable
+ * Config field, so the GUI/persistence stay in sync with the struct
+ * automatically instead of needing per-field UI code. */
+typedef enum { CFG_F_DOUBLE, CFG_F_INT, CFG_F_BOOL } CfgFieldKind;
+
+typedef struct {
+    const char   *key;       /* stable name, used as the config.conf key */
+    const char   *label;     /* human-readable label for the GUI */
+    const char   *category;  /* grouping shown as a top-level category   */
+    CfgFieldKind  type;
+    double        min, max;
+    size_t        offset;    /* offsetof(Config, field) */
+} CfgField;
+
+extern const CfgField CFG_FIELDS[];
+extern const int      N_CFG_FIELDS;
+double cfg_field_get(int idx);
+void   cfg_field_set(int idx, double v);
 
 /* ── Enums ─────────────────────────────────────────────── */
 
@@ -199,7 +218,18 @@ typedef struct {
     int             n_outputs;
     volatile int   *active_flag;
     float           alert_ramp_seconds;
+    int             alert_volume_min_pct;  /* system volume at fade start */
+    int             alert_volume_max_pct;  /* system volume once fade completes */
 } AudioJob;
+
+/* ── Sleep-mode phase plan (built by sleep_build_preview() in audio.c,
+ * consumed by both the "/testsleep" CLI printout and the GUI preview
+ * overlay in draw.c) ──────────────────────────────────── */
+
+typedef struct {
+    double total_seconds;
+    double intro_len, wake_len, sleep_end;
+} SleepPreviewData;
 
 /* ── Per-monitor alert overlay ─────────────────────────── */
 
@@ -217,7 +247,7 @@ typedef struct {
     int  seconds;
     char task[MAX_TASK];
     char until[MAX_UNTIL];
-    int  sw_shutdown, sw_alert, sw_fullscreen, sw_pausable;
+    int  sw_shutdown, sw_alert, sw_fullscreen, sw_pausable, sw_lock, sw_sleep;
 } ParseResult;
 
 typedef struct {
@@ -327,6 +357,9 @@ typedef struct {
     TimerMode  mode;
     int        mini;
     int        pausable;
+    int        lock;          /* -l switch: disconnect keyboard+mouse while timer runs */
+    int        input_grabbed; /* 1 while the X11 keyboard/pointer grab is active */
+    HwLock     hw_lock;       /* kernel-level USB HID deauthorize (see lock.h) */
     int        fullscreen_requested;
 
     /* Timer */
@@ -347,6 +380,16 @@ typedef struct {
     int        quote_next_idx;
     long       quote_cycle_ts;
 
+    /* Quote morph: each held quote is rasterized once to an off-screen
+     * alpha-coverage mask (XftDrawCreateAlpha) and cached here — the morph
+     * transform (scale/slide/blur) then samples these as images via
+     * XRenderComposite instead of re-rasterizing text every frame. Slot
+     * layout is whatever was built most recently; matched by quote index. */
+    int        quote_mask_idx[2];
+    Pixmap     quote_mask_px[2];
+    Picture    quote_mask_pic[2];
+    int        quote_mask_w[2], quote_mask_h[2];
+
     /* Config preview cache (parse once per keystroke, not per frame) */
     ParseResult cfg_preview;
     int         cfg_layout_sig;
@@ -364,6 +407,26 @@ typedef struct {
 
     /* Help overlay (Ctrl+H, on the start screen) */
     int        help_open;
+
+    /* Settings overlay (Ctrl+G) — reachable from the setup screen AND
+     * (by mapping cfg_win on top of tmr_win) while a timer is running.
+     * settings_cat < 0 shows the top-level category list; otherwise it's
+     * the index of the category being drilled into. settings_from_timer
+     * remembers whether it was opened over a running timer, so closing
+     * it knows to withdraw cfg_win again instead of leaving it mapped. */
+    int        settings_open;
+    int        settings_cat;
+    int        settings_from_timer;
+    int        settings_drag_field;   /* index into CFG_FIELDS, or -1 */
+
+    /* Fullscreen-alert volume slider (item 5) — dragging it live-adjusts
+     * whichever volume is currently active (alarm or sleep-waking). */
+    int        alert_vol_dragging;
+
+    /* Sleep preview overlay — typed "/testsleep <time>" then Enter */
+    int               sleep_preview_open;
+    SleepPreviewData *sleep_preview;
+    char              sleep_preview_input[MAX_INPUT];
 
     /* Insights browser (Ctrl+I) */
     int        insights_open;
@@ -425,6 +488,11 @@ typedef struct {
     pid_t           audio_pids[MAX_AUDIO_PIDS];
     int             n_audio_pids;
     pthread_mutex_t audio_lock;
+
+    /* Sleep mode ("/" switch) — calming ambient while running, gentle
+     * wake melody near/after the end, in place of the usual alarm. */
+    int             sleep_mode;
+    volatile int    sleep_audio_active;
 
     /* Cue state */
     int        cue_half_played;
@@ -495,18 +563,26 @@ void detect_monitor(App *app, int ptr_x, int ptr_y);
 
 /* config.c */
 void config_load(App *app);
+void config_save(void);
+void get_config_dir(char *out, int out_sz);
 
 /* parse.c */
 void format_time(int secs, char *out, size_t sz);
 void parse_time_input(const char *raw, ParseResult *out);
 void get_preview_switches(const char *input,
-                          int *sw_d, int *sw_a, int *sw_f, int *sw_p,
+                          int *sw_d, int *sw_a, int *sw_f, int *sw_p, int *sw_l,
                           char *until_buf, int until_sz);
 
 /* audio.c */
 void play_cue(App *app, const char *kind);
 void play_alert_sound(App *app);
+void play_sleep_ambient(App *app, double total_seconds);
+SleepPreviewData *sleep_build_preview(double total_seconds);
+void sleep_print_preview(const SleepPreviewData *d, const char *raw_input);
+void play_sleep_audition(App *app, const SleepPreviewData *d);
+void play_test_phase_cli(const char *phase_name, int volume_pct, double seconds);
 void kill_all_audio(App *app);
+void set_system_volume(int pct);  /* sets system volume exactly, up or down — see audio.c */
 
 /* db.c */
 void db_init(App *app);
@@ -529,6 +605,22 @@ void draw_config_anim(App *app);
 void draw_config_panel(App *app);
 void cfg_redraw_after_input(App *app);
 void draw_help(App *app);
+void draw_sleep_preview(App *app);
+int  sleep_preview_handle_click(App *app, int mx, int my);
+
+/* Settings overlay (Ctrl+G) — item 3 */
+void draw_settings(App *app);
+int  settings_handle_click(App *app, int mx, int my, int is_press);
+int  settings_handle_motion(App *app, int mx, int my);
+void settings_handle_release(App *app);
+void settings_handle_key(App *app, XKeyEvent *ev);
+void settings_open_overlay(App *app, int from_timer);
+void settings_close_overlay(App *app);
+
+/* Fullscreen alert volume slider — item 5 */
+int  alert_vol_handle_click(App *app, int screen_idx, int mx, int my);
+int  alert_vol_handle_motion(App *app, int screen_idx, int mx, int my);
+void alert_vol_handle_release(App *app);
 
 void ins_enter(App *app);
 void ins_leave(App *app);

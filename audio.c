@@ -353,6 +353,8 @@ static void *audio_writer_thread(void *arg) {
         if (!chunk) goto done;
 
         int phase = 0;
+        int last_volume_pct = job->alert_volume_min_pct;
+        double last_reassert = 0.0;
 
         while (*job->active_flag) {
             float elapsed = (float)phase / SAMPLE_RATE;
@@ -363,6 +365,24 @@ static void *audio_writer_thread(void *arg) {
                           ? smootherstep(elapsed / job->alert_ramp_seconds)
                           : 1.0f;
             float ramp  = 0.04f + 0.96f * fade;
+
+            /* System volume rides the same fade, from the min it was set
+             * to at alarm start up to the configured max — kept in step
+             * with the PCM loudness ramp above so the room actually gets
+             * louder as the tone does, not just the synthesized signal.
+             * Only re-applied when the target percent has moved (set_system_volume
+             * spawns a pactl process — no need to call it every chunk). */
+            int target_pct = job->alert_volume_min_pct +
+                (int)((job->alert_volume_max_pct - job->alert_volume_min_pct) * fade + 0.5f);
+            /* Re-assert periodically even when the target hasn't moved
+             * (e.g. once the fade-in has finished) — this pulls back any
+             * externally-raised system mixer instead of letting it
+             * compound on top of the configured ceiling. */
+            if (target_pct != last_volume_pct || (double)elapsed - last_reassert >= 1.0) {
+                set_system_volume(target_pct);
+                last_volume_pct = target_pct;
+                last_reassert = elapsed;
+            }
 
             /* Gets a touch brighter/more present over time so it stays
              * noticeable, without pitch-bending or growling like a siren. */
@@ -446,7 +466,18 @@ static int query_sink_volume_pct(const char *pactl, const char *sink) {
     return pct;
 }
 
-static void ensure_volume(int pct) {
+/* The single volume knob for the whole program: sets your actual system
+ * output level to exactly `pct` (0-100), on every active sink, right
+ * now — raising or lowering as needed, whichever direction gets there.
+ * Every sound in the app (alarm, sleep-mode phases, `timer test`) goes
+ * through this instead of any separate app-level/PCM gain, so 100% is
+ * always "full system volume" and every configured percent means
+ * exactly what it says. Unmutes each sink first (a sound that's
+ * supposed to be heard shouldn't stay silent because something else
+ * muted your output earlier). Skips the pactl call when a sink is
+ * already at the target — no point spawning a process to set what's
+ * already set. */
+void set_system_volume(int pct) {
     const char *pactl_paths[] = {"/usr/bin/pactl", "/usr/local/bin/pactl", NULL};
     const char *pactl = NULL;
     for (int i = 0; pactl_paths[i]; i++) {
@@ -460,6 +491,8 @@ static void ensure_volume(int pct) {
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "%s set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null", pactl);
         run_cmd(cmd);
+        snprintf(cmd, sizeof(cmd), "%s set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null", pactl, pct);
+        run_cmd(cmd);
         return;
     }
 
@@ -468,10 +501,8 @@ static void ensure_volume(int pct) {
         snprintf(cmd, sizeof(cmd), "%s set-sink-mute %s 0 2>/dev/null", pactl, sinks[i]);
         run_cmd(cmd);
 
-        /* Never lower volume that's already above the alarm target — only
-         * raise it up to the target if it's below. */
         int current = query_sink_volume_pct(pactl, sinks[i]);
-        if (current >= pct) continue;
+        if (current == pct) continue;
 
         snprintf(cmd, sizeof(cmd), "%s set-sink-volume %s %d%% 2>/dev/null",
                  pactl, sinks[i], pct);
@@ -561,10 +592,478 @@ void play_cue(App *app, const char *kind) {
     pthread_attr_destroy(&attr);
 }
 
+/* ── Sleep mode ambient/wake audio ───────────────────────────
+   Three phases, all procedurally generated (no user-supplied audio
+   files) — each phase is seeded fresh from the system clock every time
+   it starts, so no two nights sound identical:
+     - preparing: rain — filtered noise bed + periodic droplet impulses.
+                  Played once, through, at the start ("falling asleep").
+     - sleeping:  a slow, detuned-oscillator drone + LFO ("sleep bed"),
+                  looped for the bulk of the timer.
+     - waking:    a gentle rising chime/pad, looped from shortly before
+                  the timer ends until the alert is dismissed, in place
+                  of the usual siren. */
+
+typedef struct {
+    App          *app;
+    volatile int *active_flag;
+    AudioOutput   outputs[MAX_AUDIO_OUTPUTS];
+    int           n_outputs;
+    double        total_seconds;
+} SleepJob;
+
+typedef enum { SLEEP_SYN_RAIN, SLEEP_SYN_BED, SLEEP_SYN_WAKE } SleepSynMode;
+
+/* Per-phase generator state — reset (freshly seeded) at the start of
+ * every phase, so each play is its own independent random draw. */
+typedef struct {
+    uint32_t rng;
+    float    noise_lp;
+    float    drop_env, drop_freq, drop_phase;
+    double   next_drop_at;
+} RainState;
+
+static uint32_t sleep_seed(void) {
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    uint32_t s = (uint32_t)(ts.tv_nsec ^ (ts.tv_sec * 2654435761u));
+    return s ? s : 0x9e3779b9u;
+}
+
+/* generate_rain_pcm — one chunk of the "preparing" phase: a softly
+ * filtered noise bed with irregular, randomly-timed droplet impulses
+ * (short decaying sine chirps at random pitch), giving a light-rain
+ * texture rather than a wall of hiss. */
+static void generate_rain_pcm(int16_t *chunk, int n, RainState *st,
+                               double t_base, long phase0, float env_gain) {
+    for (int i = 0; i < n; i++) {
+        double elapsed = t_base + (double)(phase0 + i) / SAMPLE_RATE;
+
+        st->rng = st->rng * 1664525u + 1013904223u;
+        float white = ((int32_t)(st->rng >> 8) / 8388608.0f) - 1.0f;
+        st->noise_lp += 0.08f * (white - st->noise_lp);
+        float bed = st->noise_lp * 1.4f;
+
+        if (elapsed >= st->next_drop_at) {
+            uint32_t r = st->rng;
+            st->drop_env   = 0.55f + 0.45f * (((r >> 8) & 0xff) / 255.0f);
+            st->drop_freq  = 900.0f + 1600.0f * (((r >> 16) & 0xff) / 255.0f);
+            st->drop_phase = 0.0f;
+            double gap = 0.03 + 0.25 * (((r >> 4) & 0xff) / 255.0);
+            st->next_drop_at = elapsed + gap;
+        }
+        float drop = 0.0f;
+        if (st->drop_env > 0.0008f) {
+            st->drop_phase += (float)(TAU * st->drop_freq / SAMPLE_RATE);
+            drop = sinf(st->drop_phase) * st->drop_env;
+            st->drop_env *= 0.9985f;
+        }
+
+        float s = tanhf((bed * 0.30f + drop * 0.55f) * 1.1f) * env_gain;
+        chunk[i] = (int16_t)(clampf(s, -1.0f, 1.0f) * 32767.0f);
+    }
+}
+
+/* generate_sleep_bed_pcm — one chunk of the "sleeping" phase: three
+ * slow, mutually-detuned sine oscillators (a soft chord) each slowly
+ * amplitude-modulated by its own LFO, plus a very quiet filtered-noise
+ * pad underneath for warmth. */
+static void generate_sleep_bed_pcm(int16_t *chunk, int n, float *lp_state,
+                                    uint32_t *rng, double t_base, long phase0,
+                                    float env_gain) {
+    static const float BASE[3]   = {146.83f, 220.00f, 293.66f}; /* D3 A3 D4 */
+    static const float DETUNE[3] = {1.0f, 1.006f, 0.994f};      /* slow beating */
+    for (int i = 0; i < n; i++) {
+        double elapsed = t_base + (double)(phase0 + i) / SAMPLE_RATE;
+
+        *rng = *rng * 1664525u + 1013904223u;
+        float white = ((int32_t)(*rng >> 8) / 8388608.0f) - 1.0f;
+        *lp_state += 0.015f * (white - *lp_state);
+        float pad = *lp_state * 0.5f;
+
+        float lfo0 = 0.5f + 0.5f * sinf((float)TAU * 0.025f * (float)elapsed);
+        float lfo1 = 0.5f + 0.5f * sinf((float)TAU * 0.019f * (float)elapsed + 1.3f);
+        float lfo2 = 0.5f + 0.5f * sinf((float)TAU * 0.014f * (float)elapsed + 2.1f);
+        float chord = 0.50f * sinf((float)TAU * BASE[0] * DETUNE[0] * (float)elapsed) * lfo0
+                    + 0.35f * sinf((float)TAU * BASE[1] * DETUNE[1] * (float)elapsed) * lfo1
+                    + 0.25f * sinf((float)TAU * BASE[2] * DETUNE[2] * (float)elapsed) * lfo2;
+
+        float s = tanhf((pad * 0.30f + chord * 0.55f) * 1.05f) * env_gain;
+        chunk[i] = (int16_t)(clampf(s, -1.0f, 1.0f) * 32767.0f);
+    }
+}
+
+/* generate_waking_pcm — one chunk of the "waking" phase: a gentle,
+ * slowly rising chime melody over the same soft pad as the sleep bed,
+ * brightening/rising slightly over the given duration so it never feels
+ * like the usual jarring siren. */
+static void generate_waking_pcm(int16_t *chunk, int n, float *lp_state,
+                                 uint32_t *rng, double t_base, long phase0,
+                                 double duration, float env_gain) {
+    static const float MEL_FREQ[4] = {392.00f, 440.00f, 523.25f, 659.25f};
+    const double MEL_PERIOD = 3.0;
+    for (int i = 0; i < n; i++) {
+        double elapsed = t_base + (double)(phase0 + i) / SAMPLE_RATE;
+        double seg_t   = (double)(phase0 + i) / SAMPLE_RATE;
+        float  rise    = duration > 0 ? smootherstep((float)(seg_t / duration)) : 1.0f;
+
+        *rng = *rng * 1664525u + 1013904223u;
+        float white = ((int32_t)(*rng >> 8) / 8388608.0f) - 1.0f;
+        *lp_state += 0.02f * (white - *lp_state);
+        float pad = *lp_state * 0.4f;
+
+        float lfo = 0.5f + 0.5f * sinf((float)TAU * 0.03f * (float)elapsed);
+        float chord = 0.4f * sinf((float)TAU * 220.0f * (float)elapsed) * lfo
+                    + 0.3f * sinf((float)TAU * 293.66f * (float)elapsed);
+
+        double phi = fmod(elapsed, MEL_PERIOD * 4.0) / MEL_PERIOD;
+        int    idx = (int)phi;
+        double local_t = phi - idx;
+        float  pluck = 1.0f - expf(-(float)local_t * 30.0f);
+        float  ring  = expf(-(float)local_t * 3.0f);
+        float  freq  = MEL_FREQ[idx & 3] * (1.0f + 0.5f * rise);
+        float  mel   = sinf((float)TAU * freq * (float)elapsed) * pluck * ring;
+        mel += 0.15f * sinf((float)TAU * freq * 2.0f * (float)elapsed) * pluck * ring;
+
+        float amb = (pad * 0.35f + chord * 0.45f) * (0.25f + 0.15f * rise);
+        float s = tanhf((amb + mel * (0.25f + 0.35f * rise)) * 1.1f) * env_gain;
+        chunk[i] = (int16_t)(clampf(s, -1.0f, 1.0f) * 32767.0f);
+    }
+}
+
+/* Streams one procedurally-generated phase for up to `duration` seconds
+ * (or until *active_flag drops, or `deadline_mono` — fading out cleanly
+ * rather than cutting), dispatching each chunk to the right generator
+ * above. `t_base` carries continuous oscillator time across repeated
+ * calls for the same phase (so a looped phase doesn't click/restart);
+ * each *phase* still gets a freshly-seeded generator state, so every
+ * phase-start is its own independent random draw. */
+static void synth_sleep_segment(AudioOutput *outs, int n_outs, volatile int *active_flag,
+                                 SleepSynMode mode, double duration, double deadline_mono,
+                                 double *t_base) {
+    const int CHUNK = SAMPLE_RATE / 20;
+    int16_t *chunk = (int16_t *)malloc(CHUNK * sizeof(int16_t));
+    if (!chunk) return;
+
+    RainState rain_st = {0}; rain_st.rng = sleep_seed();
+    float    lp_state = 0.0f;
+    uint32_t rng2      = sleep_seed();
+    long phase = 0;
+
+    while (*active_flag) {
+        double seg_t = (double)phase / SAMPLE_RATE;
+        if (seg_t >= duration) break;
+
+        double now = monotonic_now();
+        double fade_out = 1.0;
+        if (deadline_mono >= 0.0) {
+            double remain = deadline_mono - now;
+            if (remain <= 0.0) break;
+            if (remain < g_config.sleep_fade_seconds) fade_out = remain / g_config.sleep_fade_seconds;
+        }
+
+        double elapsed0 = *t_base + (double)phase / SAMPLE_RATE;
+        double fade_in = elapsed0 < g_config.sleep_fade_seconds ? elapsed0 / g_config.sleep_fade_seconds : 1.0;
+        float env = (float)(fade_in * fade_out);
+        if (mode == SLEEP_SYN_RAIN)
+            env *= elapsed0 < duration ? smootherstep((float)(elapsed0 / duration)) : 1.0f;
+
+        switch (mode) {
+        case SLEEP_SYN_RAIN:
+            generate_rain_pcm(chunk, CHUNK, &rain_st, *t_base, phase, env);
+            break;
+        case SLEEP_SYN_BED:
+            generate_sleep_bed_pcm(chunk, CHUNK, &lp_state, &rng2, *t_base, phase, env);
+            break;
+        case SLEEP_SYN_WAKE:
+            generate_waking_pcm(chunk, CHUNK, &lp_state, &rng2, *t_base, phase, duration, env);
+            break;
+        }
+
+        phase += CHUNK;
+
+        ssize_t rem = CHUNK * (ssize_t)sizeof(int16_t);
+        const uint8_t *ptr = (const uint8_t *)chunk;
+        while (rem > 0) {
+            size_t wn = (size_t)rem;
+            if (wn > 8192) wn = 8192;
+            for (int i = 0; i < n_outs; i++)
+                write_all_fd(outs[i].fd, ptr, wn);
+            ptr += wn;
+            rem -= (ssize_t)wn;
+        }
+    }
+    *t_base += (double)phase / SAMPLE_RATE;
+    free(chunk);
+}
+
+/* Shared by the control thread and the /testsleep preview so the two can
+ * never drift apart. Purely proportional now — no custom files to size
+ * against. */
+static void sleep_phase_lens(double total_seconds, double *intro_len, double *wake_len) {
+    *intro_len = total_seconds > 0 ? total_seconds * 0.12 : 60.0;
+    if (*intro_len < 8.0)  *intro_len = 8.0;
+    if (*intro_len > 60.0) *intro_len = 60.0;
+
+    *wake_len = total_seconds > 0 ? total_seconds * 0.12 : 150.0;
+    if (*wake_len < 20.0)  *wake_len = 20.0;
+    if (*wake_len > 150.0) *wake_len = 150.0;
+}
+
+/* Sets the system volume for the given phase and remembers it, so the
+ * caller can periodically re-assert it (see reassert_phase_volume())
+ * without spamming pactl every chunk. */
+static void set_phase_volume(double pct, int *last_pct) {
+    set_system_volume((int)pct);
+    *last_pct = (int)pct;
+}
+
+/* Called periodically from inside a long-running phase loop to pull the
+ * system mixer back to the configured level even if something else (the
+ * user, another app) has since raised it — instead of just trusting the
+ * one-time set_phase_volume() call at phase start. */
+static void reassert_phase_volume(int pct, double *last_check_mono) {
+    double now = monotonic_now();
+    if (now - *last_check_mono < 5.0) return;
+    *last_check_mono = now;
+    set_system_volume(pct);
+}
+
+static void *sleep_control_thread(void *arg) {
+    SleepJob *job = (SleepJob *)arg;
+    double start_mono = monotonic_now();
+
+    double intro_len, wake_len;
+    sleep_phase_lens(job->total_seconds, &intro_len, &wake_len);
+
+    /* Absolute deadline by which preparing/sleeping must have handed off
+     * to waking, so waking (highest priority) always gets its full
+     * window and is never itself truncated. Unbounded (-1) only if the
+     * timer has no fixed duration, which shouldn't normally happen. */
+    double sleep_phase_end = job->total_seconds > 0.0
+        ? start_mono + (job->total_seconds > wake_len ? job->total_seconds - wake_len : 0.0)
+        : -1.0;
+
+    int last_pct; double last_check = monotonic_now();
+
+    /* Phase 1: preparing — rain, played once through, cut only (with a
+     * fade) if it doesn't fit before the deadline. */
+    set_phase_volume(g_config.sleep_volume_preparing_percent, &last_pct);
+    if (*job->active_flag) {
+        double t_base = 0.0;
+        synth_sleep_segment(job->outputs, job->n_outputs, job->active_flag,
+                             SLEEP_SYN_RAIN, intro_len, sleep_phase_end, &t_base);
+    }
+
+    /* Phase 2: sleeping — slow drone, looped to fill whatever's left
+     * before the deadline, faded out right at it. */
+    if (*job->active_flag) set_phase_volume(g_config.sleep_volume_sleeping_percent, &last_pct);
+    {
+        double t_base = 0.0;
+        while (*job->active_flag) {
+            if (sleep_phase_end >= 0.0 && monotonic_now() >= sleep_phase_end) break;
+            reassert_phase_volume(last_pct, &last_check);
+            synth_sleep_segment(job->outputs, job->n_outputs, job->active_flag,
+                                 SLEEP_SYN_BED, 20.0, sleep_phase_end, &t_base);
+        }
+    }
+
+    /* Phase 3: waking — highest priority: always plays through in full
+     * (no deadline), looped until the alert is dismissed. */
+    if (*job->active_flag) set_phase_volume(g_config.sleep_volume_waking_percent, &last_pct);
+    {
+        double t_base = 0.0;
+        while (*job->active_flag) {
+            reassert_phase_volume(last_pct, &last_check);
+            synth_sleep_segment(job->outputs, job->n_outputs, job->active_flag,
+                                 SLEEP_SYN_WAKE, 12.0, -1.0, &t_base);
+        }
+    }
+
+    for (int i = 0; i < job->n_outputs; i++) close(job->outputs[i].fd);
+    free(job);
+    return NULL;
+}
+
+static void fmt_clock_offset(time_t base, double offset_secs, char *out, size_t out_sz) {
+    time_t t = base + (time_t)offset_secs;
+    struct tm *lt = localtime(&t);
+    strftime(out, out_sz, "%H:%M:%S", lt);
+}
+
+/* Computes the phase plan for a sleep-mode timer of `total_seconds` —
+ * purely time-based now that both phases are procedurally generated —
+ * without starting any audio. Shared by the "/testsleep" CLI command
+ * and the GUI preview overlay. Caller frees the result. */
+SleepPreviewData *sleep_build_preview(double total_seconds) {
+    SleepPreviewData *d = (SleepPreviewData *)calloc(1, sizeof(SleepPreviewData));
+    if (!d) return NULL;
+    d->total_seconds = total_seconds;
+
+    sleep_phase_lens(total_seconds, &d->intro_len, &d->wake_len);
+    d->sleep_end = total_seconds > d->wake_len ? total_seconds - d->wake_len : 0.0;
+    return d;
+}
+
+/* `/testsleep <time>` — prints the phase plan to stdout, no GUI needed. */
+void sleep_print_preview(const SleepPreviewData *d, const char *raw_input) {
+    time_t now = time(NULL);
+    char dur_buf[32], t_start[16], t_sleep[16], t_wake[16], t_end[16];
+    format_time((int)d->total_seconds, dur_buf, sizeof(dur_buf));
+    fmt_clock_offset(now, 0.0,             t_start, sizeof(t_start));
+    fmt_clock_offset(now, d->intro_len,    t_sleep, sizeof(t_sleep));
+    fmt_clock_offset(now, d->sleep_end,    t_wake,  sizeof(t_wake));
+    fmt_clock_offset(now, d->total_seconds, t_end,  sizeof(t_end));
+
+    printf("Sleep mode preview\n");
+    printf("  input:     \"%s\"\n", raw_input ? raw_input : "");
+    printf("  duration:  %s  (%.0fs from now, ends ~%s)\n\n", dur_buf, d->total_seconds, t_end);
+
+    printf("Phase 1 — preparing (falls asleep to this; plays fully if it fits)\n");
+    printf("  %s -> %s\n", t_start, d->sleep_end > 0 ? t_wake : t_end);
+    printf("  system volume: %.0f%%\n", g_config.sleep_volume_preparing_percent);
+    printf("  source: generated — rain (filtered noise + droplets), fades in over %.0fs\n", d->intro_len);
+
+    printf("\nPhase 2 — sleeping (lowest priority; loops/cuts to fit)\n");
+    printf("  %s -> %s  (%.0fs)\n", t_sleep, t_wake, d->sleep_end - d->intro_len > 0 ? d->sleep_end - d->intro_len : 0.0);
+    printf("  system volume: %.0f%%\n", g_config.sleep_volume_sleeping_percent);
+    printf("  source: generated — slow detuned-oscillator drone + LFO, looped\n");
+
+    printf("\nPhase 3 — waking (highest priority; always plays in full)\n");
+    printf("  %s -> dismissed  (wake window budgeted at %.0fs, then loops until stopped)\n", t_wake, d->wake_len);
+    printf("  system volume: %.0f%%\n", g_config.sleep_volume_waking_percent);
+    printf("  source: generated — gentle rising chime over a soft pad, looped\n");
+
+    printf("\nAll transitions fade in/out over %.1fs — no hard cuts.\n", (double)g_config.sleep_fade_seconds);
+}
+
+/* ── Audition (GUI "Play preview" button) ────────────────────
+   Plays a short snippet of each phase back-to-back — preparing, then
+   sleeping, then waking — so the fades can be auditioned without
+   waiting out the real timer. Reuses the same deadline-based fade
+   machinery as the real playback, just with a short deadline per phase.
+   Stops on its own once all three snippets have played, or immediately
+   if kill_all_audio() is called (e.g. the user hits "Stop"). */
+#define SLEEP_AUDITION_SEC 4.0
+
+static void *sleep_audition_thread(void *arg) {
+    SleepJob *job = (SleepJob *)arg;
+
+    double t_base;
+    double deadline = monotonic_now() + SLEEP_AUDITION_SEC;
+    set_system_volume((int)g_config.sleep_volume_preparing_percent);
+    if (*job->active_flag) {
+        t_base = 0.0;
+        synth_sleep_segment(job->outputs, job->n_outputs, job->active_flag,
+                             SLEEP_SYN_RAIN, SLEEP_AUDITION_SEC, deadline, &t_base);
+    }
+
+    deadline = monotonic_now() + SLEEP_AUDITION_SEC;
+    if (*job->active_flag) {
+        set_system_volume((int)g_config.sleep_volume_sleeping_percent);
+        t_base = 0.0;
+        synth_sleep_segment(job->outputs, job->n_outputs, job->active_flag,
+                             SLEEP_SYN_BED, SLEEP_AUDITION_SEC, deadline, &t_base);
+    }
+
+    deadline = monotonic_now() + SLEEP_AUDITION_SEC;
+    if (*job->active_flag) {
+        set_system_volume((int)g_config.sleep_volume_waking_percent);
+        t_base = 0.0;
+        synth_sleep_segment(job->outputs, job->n_outputs, job->active_flag,
+                             SLEEP_SYN_WAKE, SLEEP_AUDITION_SEC, deadline, &t_base);
+    }
+
+    *job->active_flag = 0;
+    for (int i = 0; i < job->n_outputs; i++) close(job->outputs[i].fd);
+    free(job);
+    return NULL;
+}
+
+void play_sleep_audition(App *app, const SleepPreviewData *d) {
+    if (!d) return;
+    kill_all_audio(app);
+    app->sleep_audio_active = 1;
+
+    SleepJob *job = (SleepJob *)calloc(1, sizeof(SleepJob));
+    if (!job) return;
+
+    job->n_outputs = spawn_all_outputs(job->outputs, MAX_AUDIO_OUTPUTS);
+    if (job->n_outputs <= 0) { free(job); app->sleep_audio_active = 0; return; }
+    for (int i = 0; i < job->n_outputs; i++)
+        track_audio_pid(app, job->outputs[i].pid);
+
+    job->app         = app;
+    job->active_flag = &app->sleep_audio_active;
+
+    pthread_t tid; pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_create(&tid, &attr, sleep_audition_thread, job);
+    pthread_attr_destroy(&attr);
+}
+
+void play_sleep_ambient(App *app, double total_seconds) {
+    kill_all_audio(app);
+    app->sleep_audio_active = 1;
+
+    SleepJob *job = (SleepJob *)calloc(1, sizeof(SleepJob));
+    if (!job) return;
+
+    job->n_outputs = spawn_all_outputs(job->outputs, MAX_AUDIO_OUTPUTS);
+    if (job->n_outputs <= 0) { free(job); return; }
+
+    for (int i = 0; i < job->n_outputs; i++)
+        track_audio_pid(app, job->outputs[i].pid);
+
+    job->app            = app;
+    job->active_flag    = &app->sleep_audio_active;
+    job->total_seconds  = total_seconds;
+
+    pthread_t tid; pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_create(&tid, &attr, sleep_control_thread, job);
+    pthread_attr_destroy(&attr);
+}
+
+/* `timer test <phase>` — foreground CLI audition of one procedurally
+ * generated sleep-mode phase, at the exact same SYSTEM volume the app
+ * itself would set for that phase (see set_system_volume() — the one
+ * function in this whole program that ever touches your system volume).
+ * Blocks for `seconds`, or until Ctrl+C. No files, no mpv/ffmpeg — just
+ * the same generator used by the real sleep-mode phases. */
+void play_test_phase_cli(const char *phase_name, int volume_pct, double seconds) {
+    AudioOutput outs[MAX_AUDIO_OUTPUTS];
+    int n_outs = spawn_all_outputs(outs, MAX_AUDIO_OUTPUTS);
+    if (n_outs <= 0) { fprintf(stderr, "[%s] could not start an audio output\n", phase_name); return; }
+
+    SleepSynMode mode = SLEEP_SYN_BED;
+    if (!strcmp(phase_name, "preparing")) mode = SLEEP_SYN_RAIN;
+    else if (!strcmp(phase_name, "sleeping")) mode = SLEEP_SYN_BED;
+    else if (!strcmp(phase_name, "waking") || !strcmp(phase_name, "alarm")) mode = SLEEP_SYN_WAKE;
+
+    printf("[%s] system volume -> %d%%, playing generated audio for %.0fs (Ctrl+C to stop)\n",
+           phase_name, volume_pct, seconds);
+    set_system_volume(volume_pct);
+
+    volatile int active = 1;
+    double t_base = 0.0;
+    double last_check = monotonic_now();
+    double deadline = monotonic_now() + seconds;
+    while (active && monotonic_now() < deadline) {
+        reassert_phase_volume(volume_pct, &last_check);
+        synth_sleep_segment(outs, n_outs, &active, mode, 12.0, -1.0, &t_base);
+    }
+
+    for (int i = 0; i < n_outs; i++) { close(outs[i].fd); kill(outs[i].pid, SIGTERM); waitpid(outs[i].pid, NULL, 0); }
+}
+
 void play_alert_sound(App *app) {
-    /* The only place in the program that ever changes system volume — see
-     * the "Volume guarantee" note at the top of config.c. */
-    ensure_volume((int)g_config.alarm_volume_percent);
+    /* Raise system volume to the alarm's starting floor right away — see
+     * the "Volume guarantee" note at the top of config.c. It then ramps
+     * up to alarm_volume_max_percent as the PCM fade-in progresses (see
+     * audio_writer_thread()). */
+    set_system_volume((int)g_config.alarm_volume_min_percent);
     kill_all_audio(app);
     app->alert_audio_active = 1;
 
@@ -581,6 +1080,8 @@ void play_alert_sound(App *app) {
     job->n_samples = 0;
     job->active_flag = &app->alert_audio_active;
     job->alert_ramp_seconds = (float)g_config.alarm_ramp_seconds;
+    job->alert_volume_min_pct = (int)g_config.alarm_volume_min_percent;
+    job->alert_volume_max_pct = (int)g_config.alarm_volume_max_percent;
 
     pthread_t tid; pthread_attr_t attr;
     pthread_attr_init(&attr);

@@ -8,20 +8,27 @@ void format_time(int secs, char *out, size_t sz) {
     else        snprintf(out, sz, "%02d:%02d", m, s);
 }
 
-/* Extract leading switches: d a r f p */
+/* Extract a leading cluster of switches, in any order: d a r f p (booleans)
+ * and u (until-time) and / (sleep mode). Letters may be mixed freely, e.g.
+ * "fdu:30", "duf", "/fa30m" all work. If 'u' appears anywhere in the
+ * cluster, whatever follows (digits/colon) is until-time syntax and gets
+ * handed to parse_until as "u<rest>"; otherwise it's a plain duration. */
 static int extract_switches(const char *s, char *remainder, int rem_sz,
                              ParseResult *out) {
-    out->sw_shutdown = out->sw_alert = out->sw_fullscreen = out->sw_pausable = 0;
+    out->sw_shutdown = out->sw_alert = out->sw_fullscreen = out->sw_pausable = out->sw_lock = 0;
+    out->sw_sleep = 0;
     const char *p = s;
     while (*p && isspace((unsigned char)*p)) p++;
     const char *q = p;
-    while (*q && strchr("daprfDAPRF", *q)) q++;
-    const char *r = q;
-    while (*r && isspace((unsigned char)*r)) r++;
-    if (!*r || (!isdigit((unsigned char)*r) && tolower((unsigned char)*r) != 'u')) {
+    while (*q && strchr("daprfluDAPRFLU/", *q)) q++;
+    if (q == p) {
         snprintf(remainder, rem_sz, "%s", s);
         return 0;
     }
+    const char *r = q;
+    while (*r && isspace((unsigned char)*r)) r++;
+
+    int has_u = 0;
     for (const char *c = p; c < q; c++) {
         char lc = (char)tolower((unsigned char)*c);
         if (lc == 'd') out->sw_shutdown   = 1;
@@ -29,8 +36,37 @@ static int extract_switches(const char *s, char *remainder, int rem_sz,
         if (lc == 'r') out->sw_fullscreen = 1;
         if (lc == 'f') out->sw_fullscreen = 1;
         if (lc == 'p') out->sw_pausable   = 1;
+        if (lc == 'l') out->sw_lock       = 1;
+        if (lc == 'u') has_u = 1;
+        if (*c == '/') out->sw_sleep      = 1;
     }
-    snprintf(remainder, rem_sz, "%s", r);
+
+    /* A bare leading ':' (no 'u') also means until-time, hour omitted —
+     * ":30" means "at :30 past the hour", same as "u:30". */
+    int until_like = has_u || (*r == ':');
+
+    /* Nothing usable follows (no digits, no until-time, no sleep flag
+     * standing alone) → this wasn't actually a switch cluster (probably
+     * free-form task text that happens to start with switch letters,
+     * e.g. "up next" or "do laundry"). */
+    if (until_like) {
+        if (*r != ':' && !isdigit((unsigned char)*r)) {
+            snprintf(remainder, rem_sz, "%s", s);
+            out->sw_shutdown = out->sw_alert = out->sw_fullscreen = out->sw_pausable = out->sw_lock = out->sw_sleep = 0;
+            return 0;
+        }
+    } else if (!out->sw_sleep && !*r) {
+        snprintf(remainder, rem_sz, "%s", s);
+        out->sw_shutdown = out->sw_alert = out->sw_fullscreen = out->sw_pausable = out->sw_lock = out->sw_sleep = 0;
+        return 0;
+    } else if (*r && !isdigit((unsigned char)*r)) {
+        snprintf(remainder, rem_sz, "%s", s);
+        out->sw_shutdown = out->sw_alert = out->sw_fullscreen = out->sw_pausable = out->sw_lock = out->sw_sleep = 0;
+        return 0;
+    }
+
+    if (until_like) snprintf(remainder, rem_sz, "u%s", r);
+    else            snprintf(remainder, rem_sz, "%s", r);
     return 1;
 }
 
@@ -110,6 +146,12 @@ void parse_time_input(const char *raw, ParseResult *out) {
 
     if (tolower((unsigned char)*s) == 'u') {
         if (parse_until(s, out)) return;
+    } else if (*s == ':') {
+        /* Bare ":30" (no hour, no leading 'u') — implicit until-time. */
+        char buf[MAX_INPUT + 1];
+        buf[0] = 'u';
+        snprintf(buf + 1, sizeof(buf) - 1, "%s", s);
+        if (parse_until(buf, out)) return;
     }
 
     /* Colon-separated: MM:SS or HH:MM:SS */
@@ -159,15 +201,16 @@ skip_colon:;
 }
 
 void get_preview_switches(const char *input,
-                          int *sd, int *sa, int *sf, int *sp,
+                          int *sd, int *sa, int *sf, int *sp, int *sl,
                           char *until_buf, int until_sz) {
     (void)until_sz;
-    *sd = *sa = *sf = *sp = 0;
+    *sd = *sa = *sf = *sp = *sl = 0;
     if (until_buf) until_buf[0] = '\0';
     if (!input || !input[0]) return;
     ParseResult pr;
     parse_time_input(input, &pr);
     *sd = pr.sw_shutdown; *sa = pr.sw_alert;
     *sf = pr.sw_fullscreen; *sp = pr.sw_pausable;
+    *sl = pr.sw_lock;
     if (until_buf) snprintf(until_buf, until_sz, "%s", pr.until);
 }

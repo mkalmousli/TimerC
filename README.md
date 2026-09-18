@@ -29,6 +29,7 @@ sudo apt install libx11-dev libxft-dev libxrandr-dev libsqlite3-dev
 ./timer d30m shutdown now  # shutdown mode, 30 min
 ./timer p25m               # pausable, 25 min
 ./timer f1h fullscreen     # fullscreen mode, 1 hour
+./timer l25m focus         # lock keyboard/mouse, 25 min
 ```
 
 ## Input Switches (prefix before time)
@@ -39,8 +40,48 @@ sudo apt install libx11-dev libxft-dev libxrandr-dev libsqlite3-dev
 | `a`    | Alert mode     |
 | `f`/`r`| Fullscreen     |
 | `p`    | Pausable       |
+| `l`    | Disconnect keyboard/mouse for the duration |
 
 Example: `dp 30m` → shutdown + pausable, 30 minutes.
+
+`l` disconnects your USB keyboard and mouse at the kernel level while the
+timer counts down — not just an X11 grab. It deauthorizes the USB HID
+device(s) behind them (`/sys/bus/usb/devices/*/authorized`), the same
+mechanism `usbguard`/`authbind` use, so the OS itself stops seeing them;
+they go dark system-wide, not just inside this app.
+
+This needs root to flip that sysfs attribute, but `timer` itself never
+runs as root. Instead there's a tiny setuid-root helper
+(`timer-lock-helper`, built from `lockhelper.c`) that does nothing but
+validate a path looks like `/sys/bus/usb/devices/<addr>/authorized` and
+write `0`/`1` to it — install it **once**:
+
+```sh
+make install-lock-helper   # will prompt for sudo — installs to
+                            # /usr/local/bin/timer-lock-helper, setuid root
+```
+
+After that, `timer l25m focus` run as your normal user (no `sudo`) fully
+disconnects the devices. `make install` builds/installs everything else
+without root and reminds you if the helper isn't in place yet; without
+it, `-l` silently falls back to a plain X11 grab (still usable, but not a
+real disconnect) and logs a warning. `sudo make uninstall-lock-helper`
+removes it again.
+
+While locked there is no way to cancel the countdown from the keyboard or
+mouse — they're not attached to the machine. Middle-click stop, the
+window-manager close button, and `SIGINT`/`SIGTERM` are also ignored for
+good measure. **The only way out is `SIGKILL` or a hard reboot** — no
+process can block those, which is also the safety net: a background
+watchdog process (independent of the main one) re-authorizes the devices
+the moment the countdown's time is up, or immediately if the main process
+dies for any reason, so a crash can never leave your input permanently
+dead. Once the timer actually finishes, control is handed back
+immediately for the alert/shutdown that follows.
+
+Only USB HID devices are covered (keyboards/mice on PS/2, Bluetooth, or a
+laptop's internal I2C touchpad aren't). Check the log for which devices
+were found and locked.
 
 ## CLI Flags
 
@@ -49,6 +90,7 @@ Example: `dp 30m` → shutdown + pausable, 30 minutes.
 | `-m alert\|shutdown` | Mode                        |
 | `-p / --pausable` | Enable pause/resume            |
 | `-f / --fullscreen` | Start in fullscreen mode     |
+| `-l / --lock`     | Disconnect keyboard/mouse for the duration |
 | `--theme NAME`    | Theme by name (see below — names are generated fresh each run, so check the log/config window for this run's names) |
 | `-h / --help`     | Show help                      |
 
@@ -79,31 +121,33 @@ Example: `dp 30m` → shutdown + pausable, 30 minutes.
 
 ## Configuration
 
-Alarm behavior, window sizes, and redraw pacing are tunable at
-`~/.config/timer_c/config.conf` (or `$XDG_CONFIG_HOME/timer_c/config.conf`).
-The file is created with every option documented — description, valid
-range, default, and an example — the first time you run the app; edit it
-and restart to apply changes. `config.example.conf` in this repo is a copy
-for reference without having to run the app first.
+There is no config file. Alarm behavior, window sizes, redraw pacing,
+and sleep-mode audio levels are plain values assigned directly to
+`g_config` fields in `config_load()` in `config.c`, each documented
+right there with its type/range/default/why. To change a value, edit
+it and rebuild.
 
-Format is `key = value`, one per line; `#` starts a comment. Unknown keys
-are logged and skipped; out-of-range values are clamped to the nearest
-valid value and logged — the file is never rejected.
+The `config/` directory next to the binary is unrelated runtime state
+(session log and SQLite database) — not a settings file. Sleep-mode
+audio (preparing/sleeping/waking) is entirely procedurally generated —
+there are no custom audio files to drop in.
 
-```conf
-# Louder alarm, faster fade-in, always start in fullscreen
-alarm.volume_percent = 70
-alarm.ramp_seconds = 3
-startup.fullscreen = 1
-```
+**One volume model:** every `*_volume_percent` field in `g_config`
+(`alarm_volume_min/max_percent`, `sleep_volume_preparing/sleeping/
+waking_percent`) is your actual **system/speaker output level**, 0-100%,
+with 100% meaning full system volume — there is no separate app-level
+audio gain layered on top. `set_system_volume()` in `audio.c` is the
+*only* thing in the whole program that ever touches your system volume;
+it's called the instant each sound (the alarm, or a sleep-mode phase)
+starts, and re-asserted periodically while that sound plays, moving your
+actual volume up or down — instantly, automatically — to match that
+sound's configured percent, even if something else nudges the system
+mixer in the meantime. Try it with `timer test
+preparing|sleeping|waking|alarm|all` (see `--help`), which sets your
+system volume exactly the same way before playing each phase's
+generated audio directly (no external player).
 
-**System volume guarantee:** `alarm.volume_percent` is the *only* setting
-in the whole program that ever touches your system/master output volume,
-and it is only ever applied immediately before the alarm sound starts —
-never on launch, for UI cues, or otherwise.
-
-See `config.c` for the full list of options (also enumerated in the
-generated config file).
+See `config.c` for the full list of options.
 
 ## Audio Requirements (any one)
 

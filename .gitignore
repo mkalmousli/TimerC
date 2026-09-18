@@ -1,5 +1,6 @@
 # ── Build artifacts ──────────────────────────────────────
 timer
+timer-lock-helper
 *.o
 *.a
 *.so
@@ -15,6 +16,9 @@ data.db-shm
 data.db-wal
 *.db-shm
 *.db-wal
+
+# ── Runtime data dir (sessions.db, log, sleep-mode audio folders) ──
+/config/
 
 # ── Debug / profiling ────────────────────────────────────
 *.dSYM/

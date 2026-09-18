@@ -178,56 +178,94 @@ static double fit_lightness(double hue, double sat, unsigned long bg, double tar
 
 static char g_theme_names[N_THEMES][24];
 
-/* Wrap v into [lo, hi) — like hue_wrap but for a sub-arc of the wheel
- * rather than the full 360°, so a jittered hue never escapes the arc. */
-static double wrap_range(double v, double lo, double hi) {
-    double span = hi - lo;
-    if (span <= 0.0) return lo;
-    return lo + hue_wrap(v - lo, span);
+/* Time-of-day mood: a smooth 24h arc of keyframes carrying this run's
+ * palettes from restful midnight indigo through cyan dawn, crisp azure
+ * midday, teal afternoon, warm amber sunset, and violet dusk, back to
+ * indigo — so re-generating at 9am vs 9pm actually feels different, and
+ * the feel changes gradually across the day rather than snapping between
+ * a few fixed buckets. `sat` is the accent's saturation target and also
+ * scales the background/surface/border saturation below it; `bg_l` is
+ * the background's target lightness (nights sit a little darker, midday
+ * a little brighter); `contrast` is the WCAG target fit_lightness solves
+ * the accent against. */
+typedef struct { double hour, hue, sat, bg_l, contrast; } DayAnchor;
+static const DayAnchor DAY_ANCHORS[] = {
+    {  0.0, 255.0, 0.42, 0.015, 4.2 },  /* midnight — dim indigo */
+    {  5.0, 230.0, 0.40, 0.018, 4.3 },  /* predawn — cobalt */
+    {  7.5, 190.0, 0.46, 0.023, 4.5 },  /* dawn — cyan */
+    { 12.0, 205.0, 0.50, 0.028, 4.8 },  /* midday — crisp azure */
+    { 17.0, 150.0, 0.48, 0.024, 4.6 },  /* afternoon — teal/jade */
+    { 19.0,  32.0, 0.55, 0.020, 4.6 },  /* sunset — warm amber */
+    { 21.5, 280.0, 0.46, 0.016, 4.3 },  /* dusk — violet */
+    { 24.0, 255.0, 0.42, 0.015, 4.2 },  /* wraps back to midnight indigo */
+};
+#define N_DAY_ANCHORS ((int)(sizeof(DAY_ANCHORS)/sizeof(DAY_ANCHORS[0])))
+
+/* Shortest circular path between two hues (never the "long way round"). */
+static double hue_lerp_shortest(double a, double b, double t) {
+    double d = hue_wrap(b - a + 180.0, 360.0) - 180.0;
+    return hue_wrap(a + d * t, 360.0);
 }
 
-/* Build N_THEMES fresh black-mode palettes for this run.
- *
- * Hues are drawn from the teal/cyan/blue/indigo arc of the wheel —
- * the calm, concentration-associated colors — rather than the full
- * wheel, so launching the app drops you straight into a focus-
- * friendly palette instead of a possibly energizing/jarring random
- * hue (warm reds/oranges/yellows are excluded here; red is reserved
- * for the universal "time's up" danger color below). Saturation is
- * kept moderate for the same reason: legible, not loud. The pick
- * within that arc is still fresh — random base + jitter — every run. */
+static void day_mood(double hour_frac, double *hue, double *sat,
+                      double *bg_l, double *contrast) {
+    int i = 0;
+    while (i < N_DAY_ANCHORS - 2 && DAY_ANCHORS[i+1].hour <= hour_frac) i++;
+    const DayAnchor *a = &DAY_ANCHORS[i], *b = &DAY_ANCHORS[i+1];
+    double span = b->hour - a->hour;
+    double t = span > 0.0 ? (hour_frac - a->hour) / span : 0.0;
+    *hue      = hue_lerp_shortest(a->hue, b->hue, t);
+    *sat      = a->sat      + (b->sat      - a->sat)      * t;
+    *bg_l     = a->bg_l     + (b->bg_l     - a->bg_l)     * t;
+    *contrast = a->contrast + (b->contrast - a->contrast) * t;
+}
+
+/* Build N_THEMES fresh black-mode palettes, re-rolled every call (at
+ * launch, and again on every Tab press) and shaped by the current wall-
+ * clock time via day_mood() above. Each call still produces N_THEMES
+ * distinct-but-related hues — a random base plus golden-ish jitter
+ * spread across a narrow arc around the moment's mood hue — so cycling
+ * through them feels like variety on a theme, not a random grab bag. */
 void generate_themes(void) {
-    const double FOCUS_HUE_MIN = 155.0, FOCUS_HUE_MAX = 250.0;
-    const double ARC = FOCUS_HUE_MAX - FOCUS_HUE_MIN;
+    time_t now_t = time(NULL);
+    struct tm *lt = localtime(&now_t);
+    double hour_frac = lt->tm_hour + lt->tm_min / 60.0 + lt->tm_sec / 3600.0;
+
+    double mood_hue, mood_sat, mood_bg_l, mood_contrast;
+    day_mood(hour_frac, &mood_hue, &mood_sat, &mood_bg_l, &mood_contrast);
+
+    const double ARC = 40.0;
     double step      = ARC / N_THEMES;
-    double base_hue  = FOCUS_HUE_MIN + ((double)(rand() % 10000) / 10000.0) * ARC;
+    double base_hue  = mood_hue - ARC / 2.0 + ((double)(rand() % 10000) / 10000.0) * step;
 
     for (int i = 0; i < N_THEMES; i++) {
         double jitter = (((double)(rand() % 10000) / 10000.0) - 0.5) * step * 0.6;
-        double hue = wrap_range(base_hue + step * i + jitter, FOCUS_HUE_MIN, FOCUS_HUE_MAX);
+        double hue = hue_wrap(base_hue + step * i + jitter, 360.0);
 
-        /* Background/surfaces/border: near-black, faintly tinted by hue. */
-        unsigned long bg           = hsl_rgb(hue, 0.32, 0.02);
-        unsigned long surface      = hsl_rgb(hue, 0.28, 0.045);
-        unsigned long surface_soft = hsl_rgb(hue, 0.24, 0.08);
-        unsigned long border       = hsl_rgb(hue, 0.18, 0.15);
+        /* Background/surfaces/border: near-black, faintly tinted by hue,
+         * scaled by this moment's mood lightness/saturation. */
+        double sat_scale = mood_sat / 0.50;
+        unsigned long bg           = hsl_rgb(hue, 0.32 * sat_scale, mood_bg_l);
+        unsigned long surface      = hsl_rgb(hue, 0.28 * sat_scale, mood_bg_l * 2.25);
+        unsigned long surface_soft = hsl_rgb(hue, 0.24 * sat_scale, mood_bg_l * 4.0);
+        unsigned long border       = hsl_rgb(hue, 0.18 * sat_scale, mood_bg_l * 7.5);
 
         /* Text: near-white and muted grey, barely tinted — reads as
          * plain black-mode text, not colored. */
         unsigned long text       = hsl_rgb(hue, 0.05, 0.93);
         unsigned long text_muted = hsl_rgb(hue, 0.07, 0.50);
 
-        /* Accent: the theme's real color — moderately saturated (calm,
-         * not loud), with its lightness solved against bg for
-         * >=4.5:1 contrast (WCAG AA). */
-        double accent_l = fit_lightness(hue, 0.50, bg, 4.5);
-        unsigned long accent      = hsl_rgb(hue, 0.50, accent_l);
-        unsigned long accent_soft = hsl_rgb(hue, 0.34, 0.12);
+        /* Accent: the theme's real color — saturated to match the
+         * moment's mood, with its lightness solved against bg for the
+         * mood's WCAG contrast target. */
+        double accent_l = fit_lightness(hue, mood_sat, bg, mood_contrast);
+        unsigned long accent      = hsl_rgb(hue, mood_sat, accent_l);
+        unsigned long accent_soft = hsl_rgb(hue, 0.34 * sat_scale, mood_bg_l * 6.0);
 
         /* Danger stays true red for universal "time's up" urgency, but
          * its lightness is solved the same way so it's always legible
          * against this particular background. */
-        double danger_l = fit_lightness(2.0, 0.70, bg, 4.5);
+        double danger_l = fit_lightness(2.0, 0.70, bg, mood_contrast);
         unsigned long danger = hsl_rgb(2.0, 0.70, danger_l);
 
         Theme *t = &THEMES[i];
@@ -389,52 +427,163 @@ static void quote_tick_cycle(App *app, long now_ms) {
 }
 
 void draw_release_quote_cache(App *app) {
-    (void)app;
+    for (int i = 0; i < 2; i++) {
+        if (app->quote_mask_pic[i]) {
+            XRenderFreePicture(app->dpy, app->quote_mask_pic[i]);
+            app->quote_mask_pic[i] = None;
+        }
+        if (app->quote_mask_px[i]) {
+            XFreePixmap(app->dpy, app->quote_mask_px[i]);
+            app->quote_mask_px[i] = 0;
+        }
+        app->quote_mask_idx[i] = -1;
+    }
 }
 
-/* Plain alpha-blended text draw — a faint drop shadow (offset +1,+1,
- * muted color) then the accent-colored glyphs, both at `alpha`. This
- * is the standard per-glyph AA blending Xft/XRender already do, no
- * offscreen images or masks involved. */
-static void draw_quote_text(App *app, XftDraw *draw, XftFont *font,
-                            const Theme *th, int cx, int baseline,
-                            const char *text, double alpha) {
-    if (!draw || !font || !text || !text[0] || alpha <= 0.004) return;
+/* Rasterize QUOTES[q_idx] once into an off-screen A8 alpha-coverage
+ * picture (an actual "text as an image" — a pure glyph-shape mask, no
+ * color baked in) and cache it in the given slot, keyed by quote index
+ * so it's only rebuilt when that slot's quote actually changes. This is
+ * what draw_quote_image() below scales/slides/blends every frame instead
+ * of re-rasterizing glyphs each time — the morph transforms an image,
+ * it doesn't re-run text layout. */
+static Picture get_quote_mask(App *app, int slot, int q_idx, XftFont *font,
+                              int *out_w, int *out_h) {
+    if (q_idx < 0 || q_idx >= N_QUOTES || !font) return None;
+
+    if (app->quote_mask_idx[slot] == q_idx && app->quote_mask_pic[slot] != None) {
+        *out_w = app->quote_mask_w[slot];
+        *out_h = app->quote_mask_h[slot];
+        return app->quote_mask_pic[slot];
+    }
+
+    if (app->quote_mask_pic[slot]) {
+        XRenderFreePicture(app->dpy, app->quote_mask_pic[slot]);
+        app->quote_mask_pic[slot] = None;
+    }
+    if (app->quote_mask_px[slot]) {
+        XFreePixmap(app->dpy, app->quote_mask_px[slot]);
+        app->quote_mask_px[slot] = 0;
+    }
+    app->quote_mask_idx[slot] = -1;
+
+    const char *text = QUOTES[q_idx];
+    int w = text_width(app, font, text);
+    int h = font->ascent + font->descent;
+    if (w <= 0 || h <= 0) return None;
+
+    XRenderPictFormat *a8 = XRenderFindStandardFormat(app->dpy, PictStandardA8);
+    if (!a8) return None;
+
+    Pixmap px = XCreatePixmap(app->dpy, DefaultRootWindow(app->dpy), w, h, 8);
+    if (!px) return None;
+    Picture pic = XRenderCreatePicture(app->dpy, px, a8, 0, NULL);
+    if (!pic) { XFreePixmap(app->dpy, px); return None; }
+
+    XRenderColor clear = {0, 0, 0, 0};
+    XRenderFillRectangle(app->dpy, PictOpSrc, pic, &clear, 0, 0, w, h);
+
+    XftDraw *xd = XftDrawCreateAlpha(app->dpy, px, 8);
+    if (xd) {
+        XftColor col;
+        memset(&col, 0, sizeof(col));
+        col.color.red = col.color.green = col.color.blue = col.color.alpha = 0xffff;
+        XftDrawStringUtf8(xd, &col, font, 0, font->ascent,
+                          (const FcChar8 *)text, (int)strlen(text));
+        XftDrawDestroy(xd);
+    }
+
+    app->quote_mask_idx[slot] = q_idx;
+    app->quote_mask_px[slot]  = px;
+    app->quote_mask_pic[slot] = pic;
+    app->quote_mask_w[slot]   = w;
+    app->quote_mask_h[slot]   = h;
+    *out_w = w; *out_h = h;
+    return pic;
+}
+
+/* Composite one glyph-shape mask onto `dest_buf`, scaled and repositioned
+ * via an XRenderComposite transform (the same bilinear-scale technique
+ * draw_text_stretched() uses above, but blended with PictOpOver through
+ * a solid color + alpha instead of PictOpSrc-overwriting pixels) — real
+ * image compositing, not a glyph re-draw. */
+static void composite_quote_mask(App *app, Drawable dest_buf,
+                                 Picture mask, int mw, int mh, XftFont *font,
+                                 unsigned long color, double alpha,
+                                 int cx, double baseline_px, double scale) {
+    if (mask == None || alpha <= 0.004 || mw <= 0 || mh <= 0 || scale <= 0.01) return;
     if (alpha > 1.0) alpha = 1.0;
-    int x = cx - text_width(app, font, text) / 2;
+
+    XRenderPictFormat *dfmt = XRenderFindVisualFormat(app->dpy, app->vis);
+    if (!dfmt) return;
+    Picture dst = XRenderCreatePicture(app->dpy, dest_buf, dfmt, 0, NULL);
+    if (!dst) return;
 
     XRenderColor rc;
-    XftColor col;
-
-    rc.red = rc.green = rc.blue = 0;
-    rc.red   = (unsigned short)(((th->text_muted >> 16) & 0xff) * 257);
-    rc.green = (unsigned short)(((th->text_muted >> 8)  & 0xff) * 257);
-    rc.blue  = (unsigned short)(( th->text_muted         & 0xff) * 257);
-    rc.alpha = (unsigned short)(alpha * 0.45 * 65535.0 + 0.5);
-    XftColorAllocValue(app->dpy, app->vis, app->cmap, &rc, &col);
-    XftDrawStringUtf8(draw, &col, font, x + 1, baseline + 1,
-                      (const FcChar8 *)text, (int)strlen(text));
-    XftColorFree(app->dpy, app->vis, app->cmap, &col);
-
-    rc.red   = (unsigned short)(((th->accent >> 16) & 0xff) * 257);
-    rc.green = (unsigned short)(((th->accent >> 8)  & 0xff) * 257);
-    rc.blue  = (unsigned short)(( th->accent         & 0xff) * 257);
+    rc.red   = (unsigned short)(((color >> 16) & 0xff) * 257);
+    rc.green = (unsigned short)(((color >> 8)  & 0xff) * 257);
+    rc.blue  = (unsigned short)(( color         & 0xff) * 257);
     rc.alpha = (unsigned short)(alpha * 65535.0 + 0.5);
-    XftColorAllocValue(app->dpy, app->vis, app->cmap, &rc, &col);
-    XftDrawStringUtf8(draw, &col, font, x, baseline,
-                      (const FcChar8 *)text, (int)strlen(text));
-    XftColorFree(app->dpy, app->vis, app->cmap, &col);
+    Picture src = XRenderCreateSolidFill(app->dpy, &rc);
+    if (src) {
+        int area_w = (int)lround(mw * scale);
+        int area_h = (int)lround(mh * scale);
+        if (area_w > 0 && area_h > 0) {
+            int area_x = cx - area_w / 2;
+            int area_y = (int)lround(baseline_px - font->ascent * scale);
+
+            XTransform xf;
+            memset(&xf, 0, sizeof(xf));
+            xf.matrix[0][0] = XDoubleToFixed((double)mw / area_w);
+            xf.matrix[1][1] = XDoubleToFixed((double)mh / area_h);
+            xf.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(app->dpy, mask, &xf);
+            XRenderSetPictureFilter(app->dpy, mask, FilterBilinear, NULL, 0);
+
+            XRenderComposite(app->dpy, PictOpOver, src, mask, dst,
+                             0, 0, 0, 0, area_x, area_y, area_w, area_h);
+        }
+        XRenderFreePicture(app->dpy, src);
+    }
+    XRenderFreePicture(app->dpy, dst);
 }
 
-/* Simple sequential fade: the outgoing quote fades all the way out
- * first, then — only once it's gone — the incoming quote fades in.
- * Never both on screen at once, no overlap, no scaling. */
+/* One quote "frame": drop shadow + accent glyphs, same look as the old
+ * plain text draw, plus — only while actually moving (dy != 0) — a
+ * couple of extra copies smeared along the motion at falling alpha. That
+ * smear is the whole trick behind the "buttery melt" feel: it's not a
+ * real blur, just 2 cheap extra composites, but combined with the scale
+ * + slide + long cross-fade overlap below it reads as one shape flowing
+ * into the next rather than a flat opacity crossfade. */
+static void draw_quote_image(App *app, Drawable buf, XftFont *font, const Theme *th,
+                             Picture mask, int mw, int mh,
+                             int cx, int baseline, double alpha, double scale, double dy) {
+    if (mask == None || alpha <= 0.004) return;
+
+    if (fabs(dy) > 0.4) {
+        composite_quote_mask(app, buf, mask, mw, mh, font, th->accent,
+                             alpha * 0.10, cx, baseline + dy * 2.2, scale);
+        composite_quote_mask(app, buf, mask, mw, mh, font, th->accent,
+                             alpha * 0.18, cx, baseline + dy * 1.3, scale);
+    }
+    composite_quote_mask(app, buf, mask, mw, mh, font, th->text_muted,
+                         alpha * 0.45, cx + 1, baseline + dy + 1, scale);
+    composite_quote_mask(app, buf, mask, mw, mh, font, th->accent,
+                         alpha, cx, baseline + dy, scale);
+}
+
+/* Full-duration overlapping crossfade with motion: the outgoing quote
+ * shrinks, drifts up and fades while the incoming quote drifts down into
+ * place, grows to full size and fades in — both visible together the
+ * whole time, never sequential — so it reads as one continuous morph
+ * rather than two flat fades. Both quotes are cached glyph-mask images
+ * (get_quote_mask), so nothing here re-rasterizes text. */
 static void draw_quote_morph(App *app, XftDraw *draw, XftFont *font,
                              Drawable buf, const Theme *th,
                              int cx, int baseline, int max_w) {
-    (void)buf;
+    (void)draw;
     (void)max_w;
-    if (!font || !draw) return;
+    if (!font) return;
 
     long now_ms = ms_now();
     quote_tick_cycle(app, now_ms);
@@ -447,26 +596,31 @@ static void draw_quote_morph(App *app, XftDraw *draw, XftFont *font,
     long morph_elapsed = morphing ? elapsed - morph_start : 0;
     if (morph_elapsed > QUOTE_MORPH_MS) morph_elapsed = QUOTE_MORPH_MS;
 
+    int mw0 = 0, mh0 = 0;
+    Picture m0 = get_quote_mask(app, 0, app->quote_idx, font, &mw0, &mh0);
+
     if (!morphing) {
-        draw_quote_text(app, draw, font, th, cx, baseline, QUOTES[app->quote_idx], 1.0);
+        draw_quote_image(app, buf, font, th, m0, mw0, mh0, cx, baseline, 1.0, 1.0, 0.0);
         return;
     }
 
-    /* First half of the window: fade the old quote out to zero.
-     * Second half: fade the new quote in from zero. Only one quote is
-     * ever visible at a time. */
-    double half = (double)QUOTE_MORPH_MS / 2.0;
-    if ((double)morph_elapsed < half) {
-        double t = ease_in_out_cubic((double)morph_elapsed / half);
-        double out_a = 1.0 - t;
-        if (out_a > 0.008)
-            draw_quote_text(app, draw, font, th, cx, baseline, QUOTES[app->quote_idx], out_a);
-    } else {
-        double t = ease_in_out_cubic(((double)morph_elapsed - half) / half);
-        double in_a = t;
-        if (in_a > 0.008)
-            draw_quote_text(app, draw, font, th, cx, baseline, QUOTES[app->quote_next_idx], in_a);
-    }
+    int mw1 = 0, mh1 = 0;
+    Picture m1 = get_quote_mask(app, 1, app->quote_next_idx, font, &mw1, &mh1);
+
+    double t = ease_in_out_cubic((double)morph_elapsed / (double)QUOTE_MORPH_MS);
+
+    double out_a     = 1.0 - t;
+    double out_scale = 1.0 - 0.10 * t;
+    double out_dy    = -7.0 * t;
+
+    double in_a     = t;
+    double in_scale = 1.10 - 0.10 * t;
+    double in_dy    = 7.0 * (1.0 - t);
+
+    if (out_a > 0.008)
+        draw_quote_image(app, buf, font, th, m0, mw0, mh0, cx, baseline, out_a, out_scale, out_dy);
+    if (in_a > 0.008)
+        draw_quote_image(app, buf, font, th, m1, mw1, mh1, cx, baseline, in_a, in_scale, in_dy);
 }
 
 /* Render text stretched to exactly (area_w × area_h) via XRender bilinear scale */
@@ -717,7 +871,7 @@ typedef struct {
 static void cfg_compute_layout(App *app, CfgLayout *L) {
     ParseResult *pr = &app->cfg_preview;
     L->has_chips = pr->sw_shutdown || pr->sw_alert ||
-                   pr->sw_fullscreen || pr->sw_pausable;
+                   pr->sw_fullscreen || pr->sw_pausable || pr->sw_lock || pr->sw_sleep;
     L->has_until = pr->until[0] != '\0';
 
     XftFont *qf = get_font(app, 16, 2);
@@ -932,21 +1086,23 @@ static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
         { pr->sw_alert,      "a  alert",      th->accent_soft, th->accent, th->border },
         { pr->sw_fullscreen, "f  fullscreen", th->accent_soft, th->accent, th->border },
         { pr->sw_pausable,   "p  pausable",   th->accent_soft, th->accent, th->border },
+        { pr->sw_lock,       "l  lock input", th->danger,      0xf0e8d8UL, th->danger },
+        { pr->sw_sleep,      "/  sleep",      th->accent_soft, th->accent, th->border },
     };
     XftFont *cf = get_font(app, 9, 1);
     if (cf) {
-        int n_active = 0, chip_widths[4] = {0};
-        for (int i = 0; i < 4; i++) {
+        int n_active = 0, chip_widths[6] = {0};
+        for (int i = 0; i < 6; i++) {
             if (!chips[i].active) continue;
             chip_widths[i] = text_width(app, cf, chips[i].label) + 22;
             n_active++;
         }
         if (n_active > 0) {
             int total_w = -6;
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < 6; i++)
                 if (chips[i].active) total_w += chip_widths[i] + 6;
             int cx2 = (g_config.cfg_w - total_w) / 2, cy = L->ch_top;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 6; i++) {
                 if (!chips[i].active) continue;
                 int cw = chip_widths[i];
                 fill_rect(app, buf, chips[i].bg, cx2, cy, cw, chip_h);
@@ -1587,6 +1743,27 @@ void draw_insights(App *app) {
         xft_draw_string_centered(app, draw, fh, th->text, L->W / 2, L->nav_y + 18, nav);
     }
 
+    /* Summary stat line: last-7-days session count + current streak
+     * (consecutive days with at least one session, counting back from
+     * the most recent day in the loaded window) — derived from the
+     * already-loaded 14-day summary, no extra DB query. */
+    if (fr) {
+        int week_sessions = 0;
+        for (int i = INS_CHART_DAYS - 7; i < INS_CHART_DAYS; i++)
+            if (i >= 0) week_sessions += s->day_counts[i];
+        int streak = 0;
+        for (int i = INS_CHART_DAYS - 1; i >= 0; i--) {
+            if (s->day_counts[i] <= 0) break;
+            streak++;
+        }
+        char stat[64];
+        snprintf(stat, sizeof(stat), "7d: %d session%s  ·  streak: %d day%s",
+                 week_sessions, week_sessions == 1 ? "" : "s",
+                 streak, streak == 1 ? "" : "s");
+        xft_draw_string(app, draw, fr, th->text_muted,
+                        L->W - L->pad - text_width(app, fr, stat), L->nav_y + 30, stat);
+    }
+
     /* Stat tiles + success gauge */
     char vbuf[32];
     int cx = L->pad;
@@ -1924,6 +2101,112 @@ int ins_handle_click(App *app, int mx, int my) {
     return 1;
 }
 
+/* ── Sleep preview overlay ("/testsleep <time>" + Enter) ──── */
+
+static void sleep_preview_button_rect(int *bx, int *by, int *bw, int *bh) {
+    int W = g_config.cfg_w, H = g_config.cfg_h;
+    int pad = 24;
+    *bx = pad; *by = H - 64; *bw = W - 2*pad; *bh = 40;
+}
+
+int sleep_preview_handle_click(App *app, int mx, int my) {
+    if (!app->sleep_preview_open || !app->sleep_preview) return 0;
+    int bx, by, bw, bh;
+    sleep_preview_button_rect(&bx, &by, &bw, &bh);
+    if (mx < bx || mx >= bx + bw || my < by || my >= by + bh) return 0;
+
+    if (app->sleep_audio_active) {
+        app->sleep_audio_active = 0;
+        kill_all_audio(app);
+    } else {
+        play_sleep_audition(app, app->sleep_preview);
+    }
+    draw_sleep_preview(app);
+    return 1;
+}
+
+void draw_sleep_preview(App *app) {
+    if (!app->cfg_win) return;
+    ensure_cfg_buf(app);
+    const Theme *th = cfg_theme(app);
+    int W = g_config.cfg_w, H = g_config.cfg_h;
+    Drawable buf  = app->cfg_buf ? (Drawable)app->cfg_buf : (Drawable)app->cfg_win;
+    XftDraw *draw = app->cfg_buf ? app->cfg_buf_xft : app->cfg_xft;
+    if (!draw) return;
+
+    cfg_draw_cyber_bg(app, buf, th, 0, 0, W, H, monotonic_now());
+
+    XftFont *fh = get_font(app, 14, 1);
+    XftFont *fm = get_font(app, 10, 1);
+    XftFont *fs = get_font(app, 9, 0);
+
+    int pad = 24;
+    if (fh) xft_draw_string(app, draw, fh, th->accent, pad, pad + 14, "SLEEP PREVIEW");
+    if (fs) {
+        const char *hint = "Esc to close";
+        xft_draw_string(app, draw, fs, th->text_muted,
+                        W - pad - text_width(app, fs, hint), pad + 12, hint);
+    }
+
+    int y = pad + 42;
+    SleepPreviewData *d = app->sleep_preview;
+    if (!d) return;
+
+    if (fs) {
+        char line[300];
+        char dur[32]; format_time((int)d->total_seconds, dur, sizeof(dur));
+        snprintf(line, sizeof(line), "\"%s\"  —  %s total", app->sleep_preview_input, dur);
+        xft_draw_string(app, draw, fs, th->text_muted, pad, y, line);
+        y += 22;
+    }
+
+    struct { const char *title; const char *note; double span; double volume_pct;
+             const char *fallback; } phases[3] = {
+        { "1  PREPARING",  "plays fully if it fits",       d->intro_len,
+          g_config.sleep_volume_preparing_percent,
+          "generated: rain — filtered noise + droplets, fades in" },
+        { "2  SLEEPING",   "lowest priority — loops to fill / fades if cut",
+          d->sleep_end - d->intro_len > 0 ? d->sleep_end - d->intro_len : 0.0,
+          g_config.sleep_volume_sleeping_percent,
+          "generated: slow detuned-oscillator drone + LFO (looped)" },
+        { "3  WAKING",     "highest priority — always plays in full",
+          d->wake_len,
+          g_config.sleep_volume_waking_percent,
+          "generated: gentle rising chime over a soft pad (looped)" },
+    };
+
+    for (int p = 0; p < 3 && y < H - 90; p++) {
+        if (fm) { xft_draw_string(app, draw, fm, th->accent, pad, y, phases[p].title); y += 16; }
+        if (fs) {
+            xft_draw_string(app, draw, fs, th->text_muted, pad + 4, y, phases[p].note);
+            y += 16;
+            char span[64]; char sbuf[24]; format_time((int)phases[p].span, sbuf, sizeof(sbuf));
+            snprintf(span, sizeof(span), "~%s   system volume: %.0f%%", sbuf, phases[p].volume_pct);
+            xft_draw_string(app, draw, fs, th->text, pad + 4, y, span);
+            y += 18;
+            xft_draw_string(app, draw, fs, th->text_muted, pad + 8, y, phases[p].fallback);
+            y += 16;
+        }
+        y += 10;
+    }
+
+    int bx, by, bw, bh;
+    sleep_preview_button_rect(&bx, &by, &bw, &bh);
+    int playing = app->sleep_audio_active;
+    fill_rect(app, buf, playing ? th->danger : th->accent_soft, bx, by, bw, bh);
+    draw_rect_outline(app, buf, playing ? th->danger : th->accent, bx, by, bw, bh);
+    if (fm) {
+        const char *label = playing ? "■  Stop preview" : "▶  Play preview  (4s per phase)";
+        int tw = text_width(app, fm, label);
+        xft_draw_string(app, draw, fm, playing ? 0xf0e8d8UL : th->accent,
+                        bx + (bw - tw)/2, by + (bh + fm->ascent - fm->descent)/2, label);
+    }
+
+    if (app->cfg_buf)
+        XCopyArea(app->dpy, app->cfg_buf, app->cfg_win, app->gc, 0, 0, W, H, 0, 0);
+    XFlush(app->dpy);
+}
+
 /* ── Help overlay (Ctrl+H, start screen) ──────────────────── */
 
 typedef struct { const char *key; const char *desc; } HelpLine;
@@ -1962,6 +2245,7 @@ void draw_help(App *app) {
         {"a 25m",        "fullscreen alert when it ends"},
         {"f 25m",        "start fullscreen"},
         {"p 25m",        "allow pausing with Space"},
+        {"l 25m",        "lock keyboard/mouse, uncancelable"},
     };
     for (size_t i = 0; i < sizeof(syntax)/sizeof(syntax[0]) && fs; i++) {
         xft_draw_string(app, draw, fs, th->text, pad + 4, y, syntax[i].key);
@@ -1977,6 +2261,7 @@ void draw_help(App *app) {
         {"Ctrl+I",       "open the data log"},
         {"Ctrl+A",       "cursor to end of input"},
         {"Ctrl+H",       "toggle this help"},
+        {"Ctrl+G",       "settings (also works while a timer runs)"},
         {"Space",        "pause / resume (if pausable)"},
         {"Esc",          "dismiss alert, or quit"},
     };
@@ -1991,8 +2276,307 @@ void draw_help(App *app) {
     XFlush(app->dpy);
 }
 
-void draw_config(App *app) {
+/* ── Settings overlay (Ctrl+G) ─────────────────────────────
+ * Generic accessor table (CFG_FIELDS, config.c) drives everything here:
+ * a top-level category list, drilling into per-category sliders
+ * (numeric fields) and toggle chips (bools), matching the visual
+ * language of the help/insights overlays above. Every edit updates
+ * g_config immediately and calls config_save(). */
+
+#define SET_PAD        24
+#define SET_CAT_ROW_H  46
+#define SET_FIELD_ROW_H 58
+
+static int settings_list_categories(const char *out[8]) {
+    int c = 0;
+    for (int i = 0; i < N_CFG_FIELDS; i++) {
+        int found = 0;
+        for (int j = 0; j < c; j++)
+            if (!strcmp(out[j], CFG_FIELDS[i].category)) { found = 1; break; }
+        if (!found && c < 8) out[c++] = CFG_FIELDS[i].category;
+    }
+    return c;
+}
+
+static int settings_fields_in_category(const char *cat, int out_idx[32]) {
+    int n = 0;
+    for (int i = 0; i < N_CFG_FIELDS && n < 32; i++)
+        if (!strcmp(CFG_FIELDS[i].category, cat)) out_idx[n++] = i;
+    return n;
+}
+
+static void settings_cat_rect(int row, int *x, int *y, int *w, int *h) {
+    *x = SET_PAD; *w = g_config.cfg_w - 2*SET_PAD;
+    *y = SET_PAD + 50 + row * SET_CAT_ROW_H;
+    *h = SET_CAT_ROW_H - 8;
+}
+
+static void settings_back_rect(int *x, int *y, int *w, int *h) {
+    *x = SET_PAD; *y = SET_PAD + 6; *w = 90; *h = 26;
+}
+
+static void settings_field_rect(int row, int *x, int *y, int *w, int *h) {
+    *x = SET_PAD; *w = g_config.cfg_w - 2*SET_PAD;
+    *y = SET_PAD + 50 + row * SET_FIELD_ROW_H;
+    *h = SET_FIELD_ROW_H - 10;
+}
+
+static void settings_slider_track_rect(int fx, int fy, int fw, int fh,
+                                        int *tx, int *ty, int *tw, int *th_) {
+    *tx = fx; *tw = fw; *ty = fy + fh - 14; *th_ = 8;
+}
+
+static void settings_toggle_rect(int fx, int fy, int fw, int fh,
+                                  int *tx, int *ty, int *tw, int *th_) {
+    *tw = 60; *th_ = 24; *tx = fx + fw - *tw; *ty = fy + (fh - *th_) / 2;
+}
+
+/* Returns the category currently drilled into, or NULL if the
+ * category index is out of range (shouldn't happen in practice). */
+static const char *settings_current_category(App *app) {
+    const char *cats[8];
+    int n = settings_list_categories(cats);
+    if (app->settings_cat < 0 || app->settings_cat >= n) return NULL;
+    return cats[app->settings_cat];
+}
+
+void draw_settings(App *app) {
     if (!app->cfg_win) return;
+    ensure_cfg_buf(app);
+    const Theme *th = cfg_theme(app);
+    int W = g_config.cfg_w, H = g_config.cfg_h;
+    Drawable buf  = app->cfg_buf ? (Drawable)app->cfg_buf : (Drawable)app->cfg_win;
+    XftDraw *draw = app->cfg_buf ? app->cfg_buf_xft : app->cfg_xft;
+    if (!draw) return;
+
+    cfg_draw_cyber_bg(app, buf, th, 0, 0, W, H, monotonic_now());
+
+    XftFont *fh = get_font(app, 14, 1);
+    XftFont *fm = get_font(app, 10, 1);
+    XftFont *fs = get_font(app, 9, 0);
+
+    int pad = SET_PAD;
+    if (fh) xft_draw_string(app, draw, fh, th->accent, pad, pad + 14, "SETTINGS");
+    if (fs) {
+        const char *hint = app->settings_cat < 0 ? "Ctrl+G / Esc to close" : "Esc: back";
+        xft_draw_string(app, draw, fs, th->text_muted,
+                        W - pad - text_width(app, fs, hint), pad + 12, hint);
+    }
+
+    if (app->settings_cat < 0) {
+        const char *cats[8];
+        int n = settings_list_categories(cats);
+        for (int i = 0; i < n; i++) {
+            int x, y, w, h; settings_cat_rect(i, &x, &y, &w, &h);
+            fill_rect(app, buf, th->surface, x, y, w, h);
+            draw_rect_outline(app, buf, th->border, x, y, w, h);
+            if (fm) xft_draw_string(app, draw, fm, th->text, x + 14,
+                                    y + (h + fm->ascent - fm->descent)/2, cats[i]);
+            if (fs) xft_draw_string(app, draw, fs, th->text_muted, x + w - 20,
+                                    y + (h + fs->ascent - fs->descent)/2, ">");
+        }
+        return;
+    }
+
+    const char *cat = settings_current_category(app);
+    if (!cat) { app->settings_cat = -1; return; }
+
+    int bx, by, bw, bh; settings_back_rect(&bx, &by, &bw, &bh);
+    fill_rect(app, buf, th->surface, bx, by, bw, bh);
+    draw_rect_outline(app, buf, th->border, bx, by, bw, bh);
+    if (fs) xft_draw_string(app, draw, fs, th->text, bx + 10,
+                            by + (bh + fs->ascent - fs->descent)/2, "< Back");
+    if (fm) xft_draw_string(app, draw, fm, th->accent, bx + bw + 16,
+                            by + (bh + fm->ascent - fm->descent)/2, cat);
+
+    int idxs[32];
+    int nf = settings_fields_in_category(cat, idxs);
+    for (int r = 0; r < nf; r++) {
+        int fx, fy, fw, fhh; settings_field_rect(r, &fx, &fy, &fw, &fhh);
+        if (fy > H - 20) break;
+        const CfgField *cf = &CFG_FIELDS[idxs[r]];
+        double v = cfg_field_get(idxs[r]);
+
+        if (fs) xft_draw_string(app, draw, fs, th->text, fx, fy + 12, cf->label);
+
+        if (cf->type == CFG_F_BOOL) {
+            int tx, ty, tw, th2; settings_toggle_rect(fx, fy, fw, fhh, &tx, &ty, &tw, &th2);
+            int on = v > 0.5;
+            fill_rect(app, buf, on ? th->accent : th->surface_soft, tx, ty, tw, th2);
+            draw_rect_outline(app, buf, th->border, tx, ty, tw, th2);
+            if (fs) {
+                const char *lbl = on ? "ON" : "OFF";
+                int tw2 = text_width(app, fs, lbl);
+                xft_draw_string(app, draw, fs, on ? 0x0a0a0aUL : th->text_muted,
+                                tx + (tw - tw2)/2, ty + (th2 + fs->ascent - fs->descent)/2, lbl);
+            }
+        } else {
+            char valbuf[32];
+            if (cf->type == CFG_F_DOUBLE) snprintf(valbuf, sizeof(valbuf), "%.2f", v);
+            else                          snprintf(valbuf, sizeof(valbuf), "%d", (int)v);
+            if (fs) xft_draw_string(app, draw, fs, th->text_muted,
+                                    fx + fw - text_width(app, fs, valbuf), fy + 12, valbuf);
+
+            int tx, ty, tw, th2; settings_slider_track_rect(fx, fy, fw, fhh, &tx, &ty, &tw, &th2);
+            fill_rect(app, buf, th->surface_soft, tx, ty, tw, th2);
+            draw_rect_outline(app, buf, th->border, tx, ty, tw, th2);
+            double frac = (cf->max > cf->min) ? (v - cf->min) / (cf->max - cf->min) : 0.0;
+            if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
+            int fillw = (int)(tw * frac);
+            if (fillw > 0) fill_rect(app, buf, th->accent, tx, ty, fillw, th2);
+        }
+    }
+
+    if (app->cfg_buf)
+        XCopyArea(app->dpy, app->cfg_buf, app->cfg_win, app->gc, 0, 0, W, H, 0, 0);
+    XFlush(app->dpy);
+}
+
+int settings_handle_click(App *app, int mx, int my, int is_press) {
+    if (!is_press) return 0;
+
+    if (app->settings_cat < 0) {
+        const char *cats[8];
+        int n = settings_list_categories(cats);
+        for (int i = 0; i < n; i++) {
+            int x, y, w, h; settings_cat_rect(i, &x, &y, &w, &h);
+            if (mx >= x && mx < x+w && my >= y && my < y+h) {
+                app->settings_cat = i;
+                draw_settings(app);
+                return 1;
+            }
+        }
+        return 1;
+    }
+
+    int bx, by, bw, bh; settings_back_rect(&bx, &by, &bw, &bh);
+    if (mx >= bx && mx < bx+bw && my >= by && my < by+bh) {
+        app->settings_cat = -1;
+        draw_settings(app);
+        return 1;
+    }
+
+    const char *cat = settings_current_category(app);
+    if (!cat) return 1;
+    int idxs[32];
+    int nf = settings_fields_in_category(cat, idxs);
+    for (int r = 0; r < nf; r++) {
+        int fx, fy, fw, fhh; settings_field_rect(r, &fx, &fy, &fw, &fhh);
+        if (my < fy || my >= fy+fhh) continue;
+        const CfgField *cf = &CFG_FIELDS[idxs[r]];
+        if (cf->type == CFG_F_BOOL) {
+            int tx, ty, tw, th2; settings_toggle_rect(fx, fy, fw, fhh, &tx, &ty, &tw, &th2);
+            if (mx >= tx && mx < tx+tw && my >= ty && my < ty+th2) {
+                double v = cfg_field_get(idxs[r]);
+                cfg_field_set(idxs[r], v > 0.5 ? 0 : 1);
+                config_save();
+                draw_settings(app);
+                return 1;
+            }
+        } else {
+            int tx, ty, tw, th2; settings_slider_track_rect(fx, fy, fw, fhh, &tx, &ty, &tw, &th2);
+            if (mx >= tx-6 && mx < tx+tw+6 && my >= ty-10 && my < ty+th2+10) {
+                double frac = tw > 0 ? (double)(mx - tx) / (double)tw : 0.0;
+                if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
+                cfg_field_set(idxs[r], cf->min + frac * (cf->max - cf->min));
+                config_save();
+                app->settings_drag_field = idxs[r];
+                draw_settings(app);
+                return 1;
+            }
+        }
+        break;
+    }
+    return 1;
+}
+
+int settings_handle_motion(App *app, int mx, int my) {
+    if (app->settings_drag_field < 0) return 0;
+    const char *cat = settings_current_category(app);
+    if (!cat) return 0;
+    int idxs[32];
+    int nf = settings_fields_in_category(cat, idxs);
+    for (int r = 0; r < nf; r++) {
+        if (idxs[r] != app->settings_drag_field) continue;
+        const CfgField *cf = &CFG_FIELDS[idxs[r]];
+        int fx, fy, fw, fhh; settings_field_rect(r, &fx, &fy, &fw, &fhh);
+        int tx, ty, tw, th2; settings_slider_track_rect(fx, fy, fw, fhh, &tx, &ty, &tw, &th2);
+        (void)ty; (void)th2;
+        double frac = tw > 0 ? (double)(mx - tx) / (double)tw : 0.0;
+        if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
+        cfg_field_set(app->settings_drag_field, cf->min + frac * (cf->max - cf->min));
+        config_save();
+        draw_settings(app);
+        return 1;
+    }
+    return 0;
+}
+
+void settings_handle_release(App *app) {
+    app->settings_drag_field = -1;
+}
+
+void settings_handle_key(App *app, XKeyEvent *ev) {
+    char buf[32] = ""; KeySym ks;
+    XLookupString(ev, buf, sizeof(buf)-1, &ks, NULL);
+    if (ks == XK_Escape) {
+        if (app->settings_cat >= 0) { app->settings_cat = -1; draw_settings(app); }
+        else settings_close_overlay(app);
+        return;
+    }
+    if ((ev->state & ControlMask) && (ks == XK_g || ks == XK_G)) {
+        settings_close_overlay(app);
+        return;
+    }
+}
+
+/* Opens the Settings overlay. When `from_timer` is set (Ctrl+G pressed
+ * while a timer is running/paused/alerting), cfg_win — withdrawn but
+ * never destroyed while a timer runs, see start_running()/do_quit() in
+ * timer.c — is repositioned over the running timer window and mapped as
+ * a true overlay; closing it withdraws it again rather than leaving a
+ * second window sitting on screen. */
+void settings_open_overlay(App *app, int from_timer) {
+    app->settings_open = 1;
+    app->settings_cat = -1;
+    app->settings_drag_field = -1;
+    app->settings_from_timer = from_timer;
+    if (from_timer && app->cfg_win) {
+        int x = app->tmr_x + app->tmr_w/2 - g_config.cfg_w/2;
+        int y = app->tmr_y + app->tmr_h/2 - g_config.cfg_h/2;
+        XMoveResizeWindow(app->dpy, app->cfg_win, x, y, g_config.cfg_w, g_config.cfg_h);
+        XMapRaised(app->dpy, app->cfg_win);
+        XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
+    }
+    draw_settings(app);
+}
+
+void settings_close_overlay(App *app) {
+    app->settings_open = 0;
+    app->settings_drag_field = -1;
+    app->settings_cat = -1;
+    if (app->settings_from_timer && app->cfg_win) {
+        XWithdrawWindow(app->dpy, app->cfg_win, app->screen);
+        if (app->tmr_win) XSetInputFocus(app->dpy, app->tmr_win, RevertToPointerRoot, CurrentTime);
+    } else {
+        draw_config(app);
+    }
+    app->settings_from_timer = 0;
+}
+
+void draw_config(App *app) {
+    if (app->settings_open) {
+        draw_settings(app);
+        return;
+    }
+    if (!app->cfg_win) return;
+    if (app->sleep_preview_open) {
+        draw_sleep_preview(app);
+        return;
+    }
     if (app->help_open) {
         draw_help(app);
         return;
@@ -2072,6 +2656,31 @@ void create_config_window(App *app) {
     app->cfg_xft = make_xft_draw(app, app->cfg_win);
     app->cursor_blink = 1;
     app->cursor_blink_ts = ms_now();
+}
+
+/* ── Sleep-mode indicator badge ────────────────────────────
+ * Small pill shown in the corner of the timer view(s) whenever the
+ * sleep-mode phase state machine (audio.c's sleep_control_thread) is
+ * actively playing — i.e. this is a sleep-mode timer with its ambient
+ * audio thread still running. */
+static void draw_sleep_badge(App *app, Drawable buf, XftDraw *draw,
+                              const Theme *th, int W, int H, int mini) {
+    if (!app->sleep_mode || !app->sleep_audio_active) return;
+    if (mini && W < 150) return; /* not enough room in a tiny mini window */
+
+    const char *label = "● Sleeping…";
+    XftFont *f = get_font(app, mini ? 9 : 13, 1);
+    if (!f) return;
+    int tw = text_width(app, f, label);
+    int bw = tw + (mini ? 14 : 24);
+    int bh = f->ascent + f->descent + (mini ? 6 : 12);
+    int bx = mini ? 6 : 14;
+    int by = mini ? 6 : 14;
+    fill_rect(app, buf, th->accent_soft, bx, by, bw, bh);
+    draw_rect_outline(app, buf, th->accent, bx, by, bw, bh);
+    xft_draw_string(app, draw, f, th->accent, bx + (bw - tw)/2,
+                    by + (bh + f->ascent - f->descent)/2, label);
+    (void)H;
 }
 
 /* ── Mini timer window ─────────────────────────────────── */
@@ -2219,6 +2828,8 @@ void draw_timer_mini(App *app) {
         fill_rect(app, buf, bc, W - border, 0, border, H);
     }
 
+    draw_sleep_badge(app, buf, draw, th, W, H, 1);
+
     XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
 }
@@ -2330,6 +2941,8 @@ static void draw_timer_fullscreen(App *app) {
         if (bar_w > 0)
             fill_rect(app, buf, timer_display_color(app), 0, bottom, bar_w, prog_h);
     }
+
+    draw_sleep_badge(app, buf, draw, th, W, H, 0);
 
     XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
@@ -2474,6 +3087,21 @@ void create_timer_window(App *app) {
 
 /* ── Alert windows ─────────────────────────────────────── */
 
+/* Whichever volume is actually "live" right now during the alert: the
+ * sleep-mode waking phase's volume if this timer was sleep-mode, else
+ * the alarm's ramped-to ceiling. */
+static double *alert_active_volume_field(App *app) {
+    return app->sleep_mode ? &g_config.sleep_volume_waking_percent
+                            : &g_config.alarm_volume_max_percent;
+}
+
+static void alert_vol_rect(AlertScreen *s, int *x, int *y, int *w, int *h) {
+    *w = 320; if (*w > s->w - 80) *w = s->w - 80;
+    *h = 10;
+    *x = (s->w - *w) / 2;
+    *y = s->h*2/3 + 52 + 40;
+}
+
 static void draw_alert_screen(App *app, AlertScreen *s,
                                double elapsed, unsigned long bg_rgb,
                                double brightness) {
@@ -2507,8 +3135,62 @@ static void draw_alert_screen(App *app, AlertScreen *s,
                                          W/2, by+(bh-f->ascent-f->descent)/2+f->ascent,
                                          "Dismiss  (ESC / click)");
     }
+    /* Volume slider — bound to whichever volume is currently active
+     * (alarm ceiling, or sleep-mode waking volume), reusing the same
+     * slider look as the Settings overlay. Dragging it calls
+     * set_system_volume() live for immediate audible feedback. */
+    {
+        int sx, sy, sw, sh; alert_vol_rect(s, &sx, &sy, &sw, &sh);
+        double pct = *alert_active_volume_field(app);
+        char lbl[32]; snprintf(lbl, sizeof(lbl), "Volume  %d%%", (int)pct);
+        XftFont *f = get_font(app, 11, 0);
+        if (f) xft_draw_string_centered(app, draw, f, text_col, W/2, sy - 12, lbl);
+        fill_rect(app, buf, 0x000000UL, sx, sy, sw, sh);
+        draw_rect_outline(app, buf, text_col, sx, sy, sw, sh);
+        int fillw = (int)(sw * (pct / 100.0));
+        if (fillw > 0) fill_rect(app, buf, text_col, sx, sy, fillw, sh);
+    }
     XCopyArea(app->dpy, buf, s->win, app->gc, 0, 0, W, H, 0, 0);
     (void)elapsed;
+}
+
+int alert_vol_handle_click(App *app, int screen_idx, int mx, int my) {
+    if (screen_idx < 0 || screen_idx >= app->n_alert_screens) return 0;
+    AlertScreen *s = &app->alert_screens[screen_idx];
+    int sx, sy, sw, sh; alert_vol_rect(s, &sx, &sy, &sw, &sh);
+    if (mx < sx-8 || mx >= sx+sw+8 || my < sy-16 || my >= sy+sh+16) return 0;
+
+    double frac = sw > 0 ? (double)(mx - sx) / (double)sw : 0.0;
+    if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
+    double pct = frac * 100.0;
+    *alert_active_volume_field(app) = pct;
+    config_save();
+    set_system_volume((int)pct);
+    app->alert_vol_dragging = 1;
+    draw_alert(app);
+    return 1;
+}
+
+int alert_vol_handle_motion(App *app, int screen_idx, int mx, int my) {
+    if (!app->alert_vol_dragging) return 0;
+    if (screen_idx < 0 || screen_idx >= app->n_alert_screens) return 0;
+    AlertScreen *s = &app->alert_screens[screen_idx];
+    int sx, sy, sw, sh; alert_vol_rect(s, &sx, &sy, &sw, &sh);
+    (void)sy; (void)sh;
+    double frac = sw > 0 ? (double)(mx - sx) / (double)sw : 0.0;
+    if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
+    double pct = frac * 100.0;
+    *alert_active_volume_field(app) = pct;
+    config_save();
+    set_system_volume((int)pct);
+    draw_alert(app);
+    return 1;
+}
+
+void alert_vol_handle_release(App *app) {
+    app->alert_vol_dragging = 0;
 }
 
 void draw_alert(App *app) {
@@ -2583,7 +3265,10 @@ void create_alert_windows(App *app) {
     swa.override_redirect = True;
     swa.background_pixel  = 0;
     swa.colormap          = app->cmap;
-    swa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask;
+    /* ButtonReleaseMask/PointerMotionMask added for the fullscreen-alert
+     * volume slider (item 5) — dragging it needs motion + release. */
+    swa.event_mask        = ExposureMask | KeyPressMask | ButtonPressMask
+                          | ButtonReleaseMask | PointerMotionMask;
 
     for (int i = 0; i < n_mons; i++) {
         AlertScreen *s = &app->alert_screens[i];
