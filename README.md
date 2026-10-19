@@ -75,7 +75,7 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 
 - **Instant & tiny** — a ~190 KB native binary.
 - **Setup screen** with live preview of what you typed; fullscreen and mini modes (right-click toggles).
-- **Procedurally generated themes** — fresh near-black palettes every launch, contrast-checked.
+- **12 dark themes** — Midnight, Dracula, Nord, Gruvbox, Rose, Forest, Ember, Crimson, Cyber, Amethyst, Solar and Mono. Switch on the input page with `Tab` / `Shift+Tab` or by clicking the dots; pick one with `--theme NAME`.
 - **Procedural audio** — start/pause/half-time/last-seconds cues and a ramping alarm, synthesised in
   code (no audio files). Plays through `aplay`, `pacat`, `pw-play`, `ffplay` or `mpv`.
 - **Sleep mode** — rain/drone ambience that fades in, sustains and wakes you gently; `/testsleep 8h` previews the plan.
@@ -105,7 +105,7 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 | Key | Action |
 |---|---|
 | `Enter` | Start | 
-| `Tab` / `Ctrl+T` | Cycle theme |
+| `Tab` / `Shift+Tab` | Next / previous theme (or click a dot) |
 | `Space` | Pause / resume (if pausable) |
 | Right-click | Toggle mini ↔ fullscreen |
 | Middle-click | Stop |

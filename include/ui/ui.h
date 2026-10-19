@@ -13,6 +13,7 @@
 typedef struct App App; /* full definition: timer_state.h */
 
 void generate_themes(void);
+void theme_step(App *app, int dir);
 void cfg_refresh_preview(App *app);
 void cfg_update_layout(App *app);
 void cfg_draw_cyber_bg(App *app, Drawable buf, const Theme *th,

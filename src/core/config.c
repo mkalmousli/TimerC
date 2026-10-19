@@ -312,10 +312,7 @@ void config_load(App *app) {
      * that one run. */
 
     /* Range: -1..N_THEMES-1  Theme index used on launch; -1 = random.
-     * Themes are regenerated fresh every run (see generate_themes() in
-     * draw.c) from the current time of day, so even a fixed index still
-     * looks different each launch — it only pins *which* of the freshly
-     * generated palettes to use. */
+     * See THEME_DEFS in draw_common.c for the list. */
     g_config.default_theme = -1;
 
     /* Whether new timers are pausable by default. Same effect as always

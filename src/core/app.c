@@ -417,14 +417,10 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
     KeySym ks;
     XLookupString(ev, buf, sizeof(buf)-1, &ks, NULL);
 
-    /* Tab (or Ctrl+T) rolls a fresh set of themes, shaped by the current
-     * time of day (see day_mood() in draw.c) — every press re-generates
-     * THEMES[] from scratch rather than just cycling a fixed set picked
-     * once at launch, so the palette always matches right now. */
-    if (ks == XK_Tab ||
+    /* Tab / Ctrl+T: next theme; Shift+Tab: previous. */
+    if (ks == XK_Tab || ks == XK_ISO_Left_Tab ||
         ((ev->state & ControlMask) && (ks == XK_t || ks == XK_T))) {
-        generate_themes();
-        app->theme_idx = (app->theme_idx + 1) % N_THEMES;
+        theme_step(app, (ks == XK_ISO_Left_Tab || (ev->state & ShiftMask)) ? -1 : 1);
         draw_config(app);
         return;
     }
@@ -537,6 +533,11 @@ static void handle_event(App *app, XEvent *ev) {
                 play_cue(app, "close");
                 do_quit(app);
                 return;
+            } else if (ev->xbutton.button == Button1 &&
+                       theme_strip_hit(ev->xbutton.x, ev->xbutton.y) != -1) {
+                int h = theme_strip_hit(ev->xbutton.x, ev->xbutton.y);
+                if (h >= 0) app->theme_idx = h; else theme_step(app, h == -2 ? -1 : 1);
+                draw_config(app);
             } else if (ev->xbutton.button == Button1) {
                 app->cfg_is_dragging = 1;
                 app->cfg_drag_px = ev->xbutton.x_root; app->cfg_drag_py = ev->xbutton.y_root;
@@ -872,7 +873,7 @@ static void print_usage(const char *prog, FILE *out) {
 "OPTIONS\n"
 "  -m alert|shutdown   mode at the end        -p, --pausable     allow pause (Space)\n"
 "  -f, --fullscreen    start fullscreen       -l, --lock         lock input\n"
-"  --theme NAME        pick a theme           --gl               OpenGL renderer\n"
+"  --theme NAME        theme (Tab in the GUI) --gl               OpenGL renderer\n"
 "  -V, --version       print version          -h, --help         this help\n"
 "\n"
 "TERMINAL UIS (settings, statistics and help live here, not in the window)\n"
@@ -1097,11 +1098,14 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(a, "--theme") && i+1 < argc) {
             const char *tn = argv[++i];
-            for (int t = 0; t < N_THEMES; t++) {
-                if (!strcasecmp(tn, THEMES[t].name) ||
-                    (strstr(THEMES[t].name, " ") &&
-                     !strncasecmp(tn, strstr(THEMES[t].name," ")+1, strlen(tn))))
-                    { cli_theme = t; break; }
+            generate_themes();
+            for (int t = 0; t < N_THEMES; t++)
+                if (!strncasecmp(tn, THEMES[t].name, strlen(tn))) { cli_theme = t; break; }
+            if (cli_theme < 0) {
+                fprintf(stderr, "timerc: unknown theme '%s'. Themes:", tn);
+                for (int t = 0; t < N_THEMES; t++) fprintf(stderr, " %s", THEMES[t].name);
+                fprintf(stderr, "\n");
+                return 2;
             }
             continue;
         }

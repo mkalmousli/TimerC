@@ -15,16 +15,7 @@
 #define LOW_POWER 1
 #endif
 
-/* ── Theme data (procedurally generated at runtime) ───────
- * No fixed palettes: every run, generate_themes() below builds
- * N_THEMES fresh black-mode palettes. Each theme's accent hue is
- * spread evenly around the color wheel using golden-angle steps (so
- * hues never bunch together), and the accent/danger colors are solved
- * against the near-black background using the WCAG contrast formula
- * so they land at a comfortably legible lightness instead of a
- * guessed hex value — background, surfaces, borders and text all
- * share that one hue at low saturation, so each theme reads as one
- * coherent tinted-black room rather than mismatched colors. */
+/* ── Theme data (filled by generate_themes(), see below) ── */
 Theme THEMES[N_THEMES];
 
 static const char *QUOTES[] = {
@@ -104,207 +95,64 @@ unsigned long lerp_rgb(unsigned long a, unsigned long b, double t) {
     return ((unsigned long)r<<16)|((unsigned long)g<<8)|(unsigned long)b2;
 }
 
-/* ── Procedural theme generation ──────────────────────────
- * hsl_rgb / rel_luminance / contrast_ratio implement standard HSL->RGB
- * conversion and the WCAG relative-luminance contrast formula, used by
- * generate_themes() (below the font/text helpers, since it also wants
- * get_font-adjacent color logic kept together) to pick colors that are
- * both harmonious (shared hue, golden-angle spacing) and legible
- * (contrast-checked against the background) rather than hand-picked. */
+/* ── Themes ───────────────────────────────────────────────
+ * A fixed set of hand-picked dark palettes. Each is just a background, an
+ * accent, a text color and a danger color; surfaces, borders and muted text
+ * are mixed from those so every theme stays coherent. Tab / Shift+Tab (or a
+ * click on the theme dots) switches between them on the input page. */
 
-static double hue_wrap(double v, double m) {
-    double r = fmod(v, m);
-    return (r < 0.0) ? r + m : r;
-}
+typedef struct { const char *name; unsigned long bg, accent, text, danger; } ThemeDef;
 
-
-static unsigned long hsl_rgb(double h, double s, double l) {
-    h = hue_wrap(h, 360.0);
-    if (s < 0.0) s = 0.0;
-    if (s > 1.0) s = 1.0;
-    if (l < 0.0) l = 0.0;
-    if (l > 1.0) l = 1.0;
-    double c  = (1.0 - fabs(2.0 * l - 1.0)) * s;
-    double hp = h / 60.0;
-    double x  = c * (1.0 - fabs(fmod(hp, 2.0) - 1.0));
-    double r1 = 0, g1 = 0, b1 = 0;
-    if      (hp < 1) { r1 = c; g1 = x; }
-    else if (hp < 2) { r1 = x; g1 = c; }
-    else if (hp < 3) { g1 = c; b1 = x; }
-    else if (hp < 4) { g1 = x; b1 = c; }
-    else if (hp < 5) { r1 = x; b1 = c; }
-    else             { r1 = c; b1 = x; }
-    double m = l - c / 2.0;
-    int r = (int)lround((r1 + m) * 255.0);
-    int g = (int)lround((g1 + m) * 255.0);
-    int b = (int)lround((b1 + m) * 255.0);
-    if (r < 0) r = 0;
-    if (r > 255) r = 255;
-    if (g < 0) g = 0;
-    if (g > 255) g = 255;
-    if (b < 0) b = 0;
-    if (b > 255) b = 255;
-    return ((unsigned long)r << 16) | ((unsigned long)g << 8) | (unsigned long)b;
-}
-
-
-static double srgb_channel_lin(double c) {
-    return c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
-}
-
-static double rel_luminance(unsigned long rgb) {
-    double r = ((rgb >> 16) & 0xff) / 255.0;
-    double g = ((rgb >> 8)  & 0xff) / 255.0;
-    double b = ( rgb        & 0xff) / 255.0;
-    return 0.2126 * srgb_channel_lin(r) + 0.7152 * srgb_channel_lin(g) + 0.0722 * srgb_channel_lin(b);
-}
-
-static double contrast_ratio(unsigned long a, unsigned long b) {
-    double la = rel_luminance(a) + 0.05;
-    double lb = rel_luminance(b) + 0.05;
-    return la > lb ? la / lb : lb / la;
-}
-
-/* Nearest named hue, purely for a human-readable theme name. */
-
-static const char *hue_name(double h) {
-    static const struct { double hue; const char *name; } names[] = {
-        {   0, "Crimson" }, {  20, "Ember"   }, {  35, "Amber"  }, {  50, "Gold"    },
-        {  70, "Olive"   }, { 100, "Moss"    }, { 140, "Jade"   }, { 165, "Teal"    },
-        { 190, "Cyan"    }, { 210, "Azure"   }, { 230, "Cobalt" }, { 255, "Indigo"  },
-        { 275, "Violet"  }, { 295, "Plum"    }, { 315, "Magenta"}, { 335, "Rose"    },
-    };
-    double best_d = 1e9; const char *best = "Slate";
-    for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
-        double d = fabs(h - names[i].hue);
-        if (d > 180.0) d = 360.0 - d;
-        if (d < best_d) { best_d = d; best = names[i].name; }
-    }
-    return best;
-}
-
-/* Walk lightness upward at a fixed hue/saturation until the color
- * clears target_contrast against bg — "smart" color choice instead of
- * a guessed constant, tuned per-theme since backgrounds differ. */
-
-static double fit_lightness(double hue, double sat, unsigned long bg, double target_contrast) {
-    double best_l = 0.86;
-    for (double l = 0.45; l <= 0.86; l += 0.02) {
-        unsigned long c = hsl_rgb(hue, sat, l);
-        if (contrast_ratio(c, bg) >= target_contrast) { best_l = l; break; }
-        best_l = l;
-    }
-    return best_l;
-}
-
+static const ThemeDef THEME_DEFS[N_THEMES] = {
+    { "Midnight",  0x0B0E17, 0x6EA8FE, 0xE8EEFA, 0xFF5C5C },
+    { "Dracula",   0x15161E, 0xBD93F9, 0xF8F8F2, 0xFF5555 },
+    { "Nord",      0x161A22, 0x88C0D0, 0xECEFF4, 0xBF616A },
+    { "Gruvbox",   0x14120F, 0xFABD2F, 0xEBDBB2, 0xFB4934 },
+    { "Rose",      0x14111A, 0xEBBCBA, 0xE0DEF4, 0xEB6F92 },
+    { "Forest",    0x0A120E, 0x7BD88F, 0xE3F2E6, 0xFF6B6B },
+    { "Ember",     0x140C0A, 0xFF8A4C, 0xFBEDE4, 0xFF4D4D },
+    { "Crimson",   0x130A0D, 0xFF5C7A, 0xFBE9ED, 0xFFA94D },
+    { "Cyber",     0x0A0A12, 0x00F0FF, 0xE6FBFF, 0xFF2E88 },
+    { "Amethyst",  0x120B1A, 0xC77DFF, 0xF1E7FB, 0xFF6B8B },
+    { "Solar",     0x00141A, 0x2AA198, 0xEEE8D5, 0xDC322F },
+    { "Mono",      0x000000, 0xE6E6E6, 0xFFFFFF, 0xFF5C5C },
+};
 
 static char g_theme_names[N_THEMES][24];
 
-/* Time-of-day mood: a smooth 24h arc of keyframes carrying this run's
- * palettes from restful midnight indigo through cyan dawn, crisp azure
- * midday, teal afternoon, warm amber sunset, and violet dusk, back to
- * indigo — so re-generating at 9am vs 9pm actually feels different, and
- * the feel changes gradually across the day rather than snapping between
- * a few fixed buckets. `sat` is the accent's saturation target and also
- * scales the background/surface/border saturation below it; `bg_l` is
- * the background's target lightness (nights sit a little darker, midday
- * a little brighter); `contrast` is the WCAG target fit_lightness solves
- * the accent against. */
-typedef struct { double hour, hue, sat, bg_l, contrast; } DayAnchor;
-
-static const DayAnchor DAY_ANCHORS[] = {
-    {  0.0, 255.0, 0.42, 0.015, 4.2 },  /* midnight — dim indigo */
-    {  5.0, 230.0, 0.40, 0.018, 4.3 },  /* predawn — cobalt */
-    {  7.5, 190.0, 0.46, 0.023, 4.5 },  /* dawn — cyan */
-    { 12.0, 205.0, 0.50, 0.028, 4.8 },  /* midday — crisp azure */
-    { 17.0, 150.0, 0.48, 0.024, 4.6 },  /* afternoon — teal/jade */
-    { 19.0,  32.0, 0.55, 0.020, 4.6 },  /* sunset — warm amber */
-    { 21.5, 280.0, 0.46, 0.016, 4.3 },  /* dusk — violet */
-    { 24.0, 255.0, 0.42, 0.015, 4.2 },  /* wraps back to midnight indigo */
-};
-#define N_DAY_ANCHORS ((int)(sizeof(DAY_ANCHORS)/sizeof(DAY_ANCHORS[0])))
-
-/* Shortest circular path between two hues (never the "long way round"). */
-
-static double hue_lerp_shortest(double a, double b, double t) {
-    double d = hue_wrap(b - a + 180.0, 360.0) - 180.0;
-    return hue_wrap(a + d * t, 360.0);
+static unsigned long mix_rgb(unsigned long a, unsigned long b, double t) {
+    unsigned long out = 0;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        double ca = (double)((a >> sh) & 0xFF), cb = (double)((b >> sh) & 0xFF);
+        out |= (unsigned long)(ca + (cb - ca) * t + 0.5) << sh;
+    }
+    return out;
 }
-
-
-static void day_mood(double hour_frac, double *hue, double *sat,
-                      double *bg_l, double *contrast) {
-    int i = 0;
-    while (i < N_DAY_ANCHORS - 2 && DAY_ANCHORS[i+1].hour <= hour_frac) i++;
-    const DayAnchor *a = &DAY_ANCHORS[i], *b = &DAY_ANCHORS[i+1];
-    double span = b->hour - a->hour;
-    double t = span > 0.0 ? (hour_frac - a->hour) / span : 0.0;
-    *hue      = hue_lerp_shortest(a->hue, b->hue, t);
-    *sat      = a->sat      + (b->sat      - a->sat)      * t;
-    *bg_l     = a->bg_l     + (b->bg_l     - a->bg_l)     * t;
-    *contrast = a->contrast + (b->contrast - a->contrast) * t;
-}
-
-/* Build N_THEMES fresh black-mode palettes, re-rolled every call (at
- * launch, and again on every Tab press) and shaped by the current wall-
- * clock time via day_mood() above. Each call still produces N_THEMES
- * distinct-but-related hues — a random base plus golden-ish jitter
- * spread across a narrow arc around the moment's mood hue — so cycling
- * through them feels like variety on a theme, not a random grab bag. */
 
 void generate_themes(void) {
-    time_t now_t = time(NULL);
-    struct tm *lt = localtime(&now_t);
-    double hour_frac = lt->tm_hour + lt->tm_min / 60.0 + lt->tm_sec / 3600.0;
-
-    double mood_hue, mood_sat, mood_bg_l, mood_contrast;
-    day_mood(hour_frac, &mood_hue, &mood_sat, &mood_bg_l, &mood_contrast);
-
-    const double ARC = 40.0;
-    double step      = ARC / N_THEMES;
-    double base_hue  = mood_hue - ARC / 2.0 + ((double)(rand() % 10000) / 10000.0) * step;
-
     for (int i = 0; i < N_THEMES; i++) {
-        double jitter = (((double)(rand() % 10000) / 10000.0) - 0.5) * step * 0.6;
-        double hue = hue_wrap(base_hue + step * i + jitter, 360.0);
-
-        /* Background/surfaces/border: near-black, faintly tinted by hue,
-         * scaled by this moment's mood lightness/saturation. */
-        double sat_scale = mood_sat / 0.50;
-        unsigned long bg           = hsl_rgb(hue, 0.32 * sat_scale, mood_bg_l);
-        unsigned long surface      = hsl_rgb(hue, 0.28 * sat_scale, mood_bg_l * 2.25);
-        unsigned long surface_soft = hsl_rgb(hue, 0.24 * sat_scale, mood_bg_l * 4.0);
-        unsigned long border       = hsl_rgb(hue, 0.18 * sat_scale, mood_bg_l * 7.5);
-
-        /* Text: near-white and muted grey, barely tinted — reads as
-         * plain black-mode text, not colored. */
-        unsigned long text       = hsl_rgb(hue, 0.05, 0.93);
-        unsigned long text_muted = hsl_rgb(hue, 0.07, 0.50);
-
-        /* Accent: the theme's real color — saturated to match the
-         * moment's mood, with its lightness solved against bg for the
-         * mood's WCAG contrast target. */
-        double accent_l = fit_lightness(hue, mood_sat, bg, mood_contrast);
-        unsigned long accent      = hsl_rgb(hue, mood_sat, accent_l);
-        unsigned long accent_soft = hsl_rgb(hue, 0.34 * sat_scale, mood_bg_l * 6.0);
-
-        /* Danger stays true red for universal "time's up" urgency, but
-         * its lightness is solved the same way so it's always legible
-         * against this particular background. */
-        double danger_l = fit_lightness(2.0, 0.70, bg, mood_contrast);
-        unsigned long danger = hsl_rgb(2.0, 0.70, danger_l);
-
+        const ThemeDef *d = &THEME_DEFS[i];
         Theme *t = &THEMES[i];
-        snprintf(g_theme_names[i], sizeof(g_theme_names[i]), "%s", hue_name(hue));
-        t->name = g_theme_names[i];
-        t->bg = bg; t->surface = surface; t->surface_soft = surface_soft;
-        t->text = text; t->text_muted = text_muted;
-        t->accent = accent; t->accent_soft = accent_soft;
-        t->border = border; t->danger = danger;
-        t->until_chip_bg = surface; t->until_chip_fg = text; t->until_chip_border = border;
-        t->until_clock_fg = accent; t->until_clock_bg = bg;
-        t->lcd_active = accent; t->lcd_paused = text_muted;
+        snprintf(g_theme_names[i], sizeof(g_theme_names[i]), "%s", d->name);
+        t->name         = g_theme_names[i];
+        t->bg           = d->bg;
+        t->surface      = mix_rgb(d->bg, d->text, 0.05);
+        t->surface_soft = mix_rgb(mix_rgb(d->bg, d->accent, 0.05), d->text, 0.06);
+        t->border       = mix_rgb(d->bg, d->text, 0.22);
+        t->text         = d->text;
+        t->text_muted   = mix_rgb(d->bg, d->text, 0.55);
+        t->accent       = d->accent;
+        t->accent_soft  = mix_rgb(d->bg, d->accent, 0.24);
+        t->danger       = d->danger;
+        t->until_chip_bg = t->surface; t->until_chip_fg = t->text; t->until_chip_border = t->border;
+        t->until_clock_fg = t->accent; t->until_clock_bg = t->bg;
+        t->lcd_active = t->accent; t->lcd_paused = t->text_muted;
     }
+}
+
+/* Cycle the active theme (dir = +1 / -1). */
+void theme_step(App *app, int dir) {
+    app->theme_idx = (app->theme_idx + dir + N_THEMES) % N_THEMES;
 }
 
 

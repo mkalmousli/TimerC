@@ -52,7 +52,7 @@
 #undef  MAX_INPUT
 #define MAX_INPUT       APP_MAX_INPUT
 #define TICK_MS         50
-#define N_THEMES        4
+#define N_THEMES        12
 #define SAMPLE_RATE     44100
 #define TAU             (2.0 * M_PI)
 #define MAX_MONITORS    8
@@ -196,7 +196,7 @@ typedef struct {
     unsigned long lcd_active, lcd_paused;
 } Theme;
 
-extern Theme THEMES[N_THEMES];   /* generated at runtime — see generate_themes() */
+extern Theme THEMES[N_THEMES];   
 
 /* ── Font cache entry ──────────────────────────────────── */
 
@@ -580,6 +580,8 @@ void db_insights_load_events(App *app, int64_t session_id);
 
 /* draw.c */
 void generate_themes(void);
+void theme_step(App *app, int dir);
+int    theme_strip_hit(int x, int y);
 void cfg_refresh_preview(App *app);
 void cfg_update_layout(App *app);
 void cfg_draw_cyber_bg(App *app, Drawable buf, const Theme *th,

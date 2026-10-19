@@ -673,7 +673,7 @@ static const char *ABOUT[] = {
     "",
     "# Keys in the setup window",
     "Enter       start the timer",
-    "Tab         new theme",
+    "Tab         next theme (Shift+Tab previous, or click a dot)",
     "Esc         quit",
     "Ctrl+A      cursor to end of input",
     "",

@@ -203,6 +203,55 @@ static void cfg_draw_clock(App *app, Drawable buf, const Theme *th,
 }
 
 
+/* Theme strip along the bottom of the input page: a name label above a row
+ * of colored dots (one per theme) with ‹ › arrows either side. */
+#define TS_PITCH 24
+#define TS_R      7
+
+static void theme_strip_geom(int *x0, int *cy) {
+    int total = N_THEMES * TS_PITCH - (TS_PITCH - 2 * TS_R);
+    *x0 = (g_config.cfg_w - total) / 2 + TS_R;
+    *cy = g_config.cfg_h - 30;
+}
+
+/* Returns 0..N_THEMES-1 for a dot, -2 for the ‹ arrow, -3 for ›, -1 otherwise. */
+int theme_strip_hit(int x, int y) {
+    int x0, cy;
+    theme_strip_geom(&x0, &cy);
+    if (y < cy - 14 || y > cy + 14) return -1;
+    for (int i = 0; i < N_THEMES; i++)
+        if (abs(x - (x0 + i * TS_PITCH)) <= TS_PITCH / 2) return i;
+    if (x < x0 && x > x0 - 44) return -2;
+    if (x > x0 + (N_THEMES - 1) * TS_PITCH && x < x0 + (N_THEMES - 1) * TS_PITCH + 44) return -3;
+    return -1;
+}
+
+static void cfg_draw_theme_strip(App *app, Drawable buf, XftDraw *draw, const Theme *th) {
+    int x0, cy;
+    theme_strip_geom(&x0, &cy);
+    XftFont *fs = get_font(app, 11, 0);
+    if (fs) {
+        char lbl[48];
+        snprintf(lbl, sizeof(lbl), "%s  \xc2\xb7  Tab", THEMES[app->theme_idx].name);
+        xft_draw_string_centered(app, draw, fs, th->text_muted, g_config.cfg_w / 2, cy - 18, lbl);
+        xft_draw_string_centered(app, draw, fs, th->text_muted, x0 - 24, cy + 4, "\xe2\x80\xb9");
+        xft_draw_string_centered(app, draw, fs, th->text_muted,
+                                 x0 + (N_THEMES - 1) * TS_PITCH + 24, cy + 4, "\xe2\x80\xba");
+    }
+    for (int i = 0; i < N_THEMES; i++) {
+        int cx = x0 + i * TS_PITCH;
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, THEMES[i].bg));
+        XFillArc(app->dpy, buf, app->gc, cx - TS_R, cy - TS_R, 2 * TS_R, 2 * TS_R, 0, 360 * 64);
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, THEMES[i].accent));
+        XFillArc(app->dpy, buf, app->gc, cx - TS_R + 3, cy - TS_R + 3, 2 * TS_R - 6, 2 * TS_R - 6, 0, 360 * 64);
+        XSetForeground(app->dpy, app->gc, rgb_pixel(app, i == app->theme_idx ? th->text : th->border));
+        XSetLineAttributes(app->dpy, app->gc, i == app->theme_idx ? 2 : 1, LineSolid, CapRound, JoinRound);
+        XDrawArc(app->dpy, buf, app->gc, cx - TS_R, cy - TS_R, 2 * TS_R, 2 * TS_R, 0, 360 * 64);
+        XSetLineAttributes(app->dpy, app->gc, 1, LineSolid, CapButt, JoinMiter);
+    }
+}
+
+
 static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
                            const Theme *th, const CfgLayout *L) {
     const int input_h = 54;
@@ -243,6 +292,8 @@ static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
             XFillRectangle(app->dpy, buf, app->gc, cx2, fy + 9, 2, fh - 18);
         }
     }
+
+    cfg_draw_theme_strip(app, buf, draw, th);
 
     if (pr->until[0]) {
         char big[16] = "";
