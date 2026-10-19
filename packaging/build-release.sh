@@ -8,6 +8,17 @@ VERSION="${VERSION:?}"; TARGET="${TARGET:?}"; LIBC="${LIBC:-glibc}"
 if command -v apk >/dev/null 2>&1; then
   apk add --no-cache build-base pkgconf linux-headers libx11-dev libxft-dev libxinerama-dev \
     libxrandr-dev libxrender-dev fontconfig-dev sqlite-dev
+  if [ "${STATIC:-0}" = 1 ]; then
+    # Alpine ships no static libXext/libXrandr: build them from source
+    apk add --no-cache libx11-static fontconfig-static sqlite-static freetype-static libxcb-static \
+      expat-static brotli-static bzip2-static libpng-static zlib-static libxau-dev libxdmcp-dev \
+      libxext-dev xorgproto util-macros curl xz
+    mkdir -p /tmp/x && (cd /tmp/x && for t in libXext-1.3.6 libXrandr-1.5.4; do
+      curl -fsSL "https://www.x.org/releases/individual/lib/$t.tar.xz" | tar xJ
+      (cd "$t" && ./configure --enable-static --disable-shared --prefix=/usr >/dev/null \
+        && make -j"$(nproc)" >/dev/null && make install >/dev/null)
+    done)
+  fi
 else
   export DEBIAN_FRONTEND=noninteractive
   # Debian 11 is EOL: its mirrors moved to archive.debian.org
@@ -22,16 +33,25 @@ else
 fi
 
 make clean >/dev/null 2>&1 || true
-make -j"$(nproc)" VERSION="$VERSION"
+if [ "${STATIC:-0}" = 1 ]; then
+  make -j"$(nproc)" VERSION="$VERSION" LDFLAGS="-static -lXft -lXrender -lXinerama -lXrandr -lXext -lX11 \
+    -lxcb -lXau -lXdmcp -lfontconfig -lfreetype -lexpat -lpng16 -lbz2 -lbrotlidec -lbrotlicommon -lz \
+    -lsqlite3 -lm -lpthread"
+else
+  make -j"$(nproc)" VERSION="$VERSION"
+fi
 strip timerc timerc-lock-helper
 
 NAME="timerc-$VERSION-linux-$TARGET"
 [ "$LIBC" = musl ] && NAME="$NAME-musl"
+[ "${STATIC:-0}" = 1 ] && NAME="timerc-$VERSION-linux-$TARGET-static"
 mkdir -p "dist/$NAME"
 cp timerc timerc-lock-helper LICENSE README.md timerc.desktop timerc.svg man/timerc.1 "dist/$NAME/"
 ln -s timerc "dist/$NAME/timerc-bg"
 tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 rm -rf "dist/$NAME"
+# Single-file standalone download (static builds only)
+[ "${STATIC:-0}" = 1 ] && cp timerc "dist/timerc-linux-$TARGET-static"
 
 if [ "$LIBC" = glibc ] && [ -n "${DEB_ARCH:-}" ]; then
   P="deb/timerc_${VERSION}_${DEB_ARCH}"

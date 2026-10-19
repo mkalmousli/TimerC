@@ -25,6 +25,9 @@ jobs:
           # musl builds for Alpine / Void-musl and friends
           - { target: x86_64,  platform: linux/amd64,  image: 'alpine:3.20', libc: musl }
           - { target: aarch64, platform: linux/arm64,  image: 'alpine:3.20', libc: musl }
+          # fully static, dependency-free binaries (run on any Linux of that arch)
+          - { target: x86_64,  platform: linux/amd64,  image: 'alpine:3.20', libc: musl, static: '1' }
+          - { target: aarch64, platform: linux/arm64,  image: 'alpine:3.20', libc: musl, static: '1' }
     steps:
       - uses: actions/checkout@v4
         with: { ref: '${{ env.TAG }}' }
@@ -35,10 +38,10 @@ jobs:
         run: |
           docker run --rm --platform ${{ matrix.platform }} -v "$PWD":/src -v "$PWD/_main/packaging":/pk:ro -w /src \
             -e VERSION="${TAG#v}" -e TARGET=${{ matrix.target }} -e LIBC=${{ matrix.libc }} \
-            -e DEB_ARCH=${{ matrix.deb }} ${{ matrix.image }} sh /pk/build-release.sh
+            -e DEB_ARCH=${{ matrix.deb }} -e STATIC=${{ matrix.static || '0' }} ${{ matrix.image }} sh /pk/build-release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.target }}-${{ matrix.libc }}
+          name: dist-${{ matrix.target }}-${{ matrix.libc }}-${{ matrix.static || 'dyn' }}
           path: dist/*
 
   publish:
