@@ -1,5 +1,5 @@
 CC      = gcc
-VERSION ?= 1.1.0
+VERSION ?= 1.2.0
 MANPAGES = timerc.1 timerc-bg.1 timerc-config.1 timerc-insights.1 timerc-uninstall.1
 TARGET  = timerc
 

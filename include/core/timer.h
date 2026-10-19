@@ -173,6 +173,7 @@ void   config_normalize(void);
 void   config_get_defaults(Config *out);
 /* Terminal UI + scripting commands: config, insights, about (src/cli/tui.c) */
 int    cli_main(const char *cmd, int argc, char **argv);
+int    uninstall_main(int argc, char **argv);
 
 /* ── Enums ─────────────────────────────────────────────── */
 
