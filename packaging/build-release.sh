@@ -12,7 +12,7 @@ else
   export DEBIAN_FRONTEND=noninteractive
   # Debian 11 is EOL: its mirrors moved to archive.debian.org
   if grep -q '^11' /etc/debian_version 2>/dev/null; then
-    echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list
+    printf '%s\n' 'deb http://archive.debian.org/debian bullseye main' 'deb http://archive.debian.org/debian-security bullseye-security main' > /etc/apt/sources.list
     rm -f /etc/apt/sources.list.d/*
     echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
   fi
