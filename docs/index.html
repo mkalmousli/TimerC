@@ -61,15 +61,28 @@ code{background:var(--panel);padding:1px 6px;border-radius:5px;font-size:.92em}p
 .btn.alt{background:transparent;border:1px solid var(--line);color:var(--text)}
 img{max-width:100%;height:auto;border-radius:10px;border:1px solid var(--line)}
 section{padding:36px 0}h2{font-size:30px;margin:0 0 20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:16px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
-.card h3{margin:0 0 6px;font-size:17px}.card p{margin:0;color:var(--muted);font-size:15px}
-figure{margin:0}figcaption{color:var(--muted);font-size:14px;margin-top:6px;text-align:center}
-.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px}
+.card h3{margin:0 0 6px;font-size:17px}.card{overflow-wrap:anywhere}.card p{margin:0;color:var(--muted);font-size:15px}
+figure{margin:0;min-width:0}.shots>*,.grid>*{min-width:0}img,video{display:block;max-width:100%;height:auto}figcaption{color:var(--muted);font-size:14px;margin-top:6px;text-align:center}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));gap:18px}
 .by{color:var(--accent)!important;font-weight:600;border:1px solid var(--accent);border-radius:8px;padding:4px 12px}
 .author{font-size:18px;margin:0 0 8px}.author a{color:var(--accent);text-decoration:none}.author a:hover{text-decoration:underline}
 footer{border-top:1px solid var(--line);margin-top:40px;padding:28px 0;color:var(--muted);text-align:center}
-@media(max-width:800px){.hero{grid-template-columns:1fr}}
+.hero>*{min-width:0}pre{-webkit-overflow-scrolling:touch}
+body{-webkit-text-size-adjust:100%}
+@media(max-width:800px){.hero{grid-template-columns:1fr;gap:28px;padding:20px 0 36px}
+header{justify-content:center;text-align:center}
+header nav{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 6px;width:100%}
+header nav a{margin:0;padding:8px 10px}
+header nav a.by{margin-top:4px}
+.lead{font-size:17px}
+section{padding:24px 0}h2{font-size:25px;margin-bottom:14px}
+.btn{padding:12px 18px;margin:6px 6px 6px 0}}
+@media(max-width:480px){.wrap{padding:0 16px}
+pre{font-size:12.5px;padding:12px}
+.btn{display:block;text-align:center;margin:8px 0}
+.shots,.grid{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
