@@ -3,22 +3,42 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TimerC — fast native countdown timer for Linux (X11, pure C)</title>
+<title>TimerC — Fast Native Countdown Timer for Linux | Mohamad Almousli</title>
 <meta name="description" content="TimerC is a fast, native countdown timer and Pomodoro-style focus timer for Linux/X11, written in pure C. Foreground and background CLI, procedural audio, sleep mode, insights, themes. One-command install.">
 <meta name="keywords" content="linux timer, countdown timer, pomodoro, x11, cli timer, focus timer, c, xlib, terminal timer, sleep timer, open source">
 <meta name="author" content="Mohamad Almousli">
 <meta name="theme-color" content="#0b0712">
-<link rel="canonical" href="https://mkalmousli.github.io/timerc/">
+<link rel="canonical" href="https://al-mo.de/tools/timerc/">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="Mohamad Almousli — al-mo.de">
+<meta property="og:locale" content="en_US">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="TimerC countdown timer for Linux">
+<meta name="twitter:title" content="TimerC — fast native countdown timer for Linux">
+<meta name="twitter:description" content="Pure C, X11. timerc blocks, timerc-bg backgrounds. One-command install.">
+<link rel="alternate" href="https://al-mo.de/tools/timerc/" hreflang="en">
+<link rel="alternate" href="https://al-mo.de/tools/timerc/" hreflang="x-default">
+<link rel="apple-touch-icon" href="assets/og.png">
 <meta property="og:title" content="TimerC — fast native countdown timer for Linux">
 <meta property="og:description" content="Pure C, X11, no toolkit bloat. timerc 25m focus — blocks; timerc-bg 25m focus — backgrounds.">
-<meta property="og:url" content="https://mkalmousli.github.io/timerc/">
-<meta property="og:image" content="https://mkalmousli.github.io/timerc/assets/og.png">
+<meta property="og:url" content="https://al-mo.de/tools/timerc/">
+<meta property="og:image" content="https://al-mo.de/tools/timerc/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://mkalmousli.github.io/timerc/assets/og.png">
+<meta name="twitter:image" content="https://al-mo.de/tools/timerc/assets/og.png">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TimerC","applicationCategory":"UtilitiesApplication","operatingSystem":"Linux","description":"Fast native countdown timer for Linux/X11 written in C.","url":"https://mkalmousli.github.io/timerc/","downloadUrl":"https://github.com/mkalmousli/timerc/releases","codeRepository":"https://github.com/mkalmousli/timerc","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Mohamad Almousli","url":"https://al-mo.de"}}
+{"@context":"https://schema.org","@graph":[
+{"@type":"SoftwareApplication","@id":"https://al-mo.de/tools/timerc/#app","name":"TimerC","alternateName":["timerc","timerc-bg"],"applicationCategory":"UtilitiesApplication","operatingSystem":"Linux","softwareVersion":"1.0.0","description":"Fast native countdown timer for Linux/X11 written in C, with a blocking CLI (timerc) and a background CLI (timerc-bg).","url":"https://al-mo.de/tools/timerc/","image":"https://al-mo.de/tools/timerc/assets/og.png","screenshot":["https://al-mo.de/tools/timerc/assets/02-setup-typing.png","https://al-mo.de/tools/timerc/assets/09-fullscreen.png","https://al-mo.de/tools/timerc/assets/06-insights.png"],"downloadUrl":"https://github.com/mkalmousli/timerc/releases","codeRepository":"https://github.com/mkalmousli/timerc","programmingLanguage":"C","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@id":"https://al-mo.de/#person"}},
+{"@type":"Person","@id":"https://al-mo.de/#person","name":"Mohamad Almousli","url":"https://al-mo.de","sameAs":["https://github.com/mkalmousli"]},
+{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Mohamad Almousli","item":"https://al-mo.de/"},{"@type":"ListItem","position":2,"name":"Tools","item":"https://al-mo.de/tools/"},{"@type":"ListItem","position":3,"name":"TimerC","item":"https://al-mo.de/tools/timerc/"}]},
+{"@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"How do I install TimerC on Linux?","acceptedAnswer":{"@type":"Answer","text":"Run: curl -fsSL https://raw.githubusercontent.com/mkalmousli/timerc/main/install.sh | sh. It supports apt, dnf, pacman, zypper, apk and xbps. Prebuilt tarballs and .deb packages exist for x86_64, i686, aarch64 and armv7."}},
+{"@type":"Question","name":"What is the difference between timerc and timerc-bg?","acceptedAnswer":{"@type":"Answer","text":"timerc runs in the foreground and blocks until the timer ends, so it works in shell scripts. timerc-bg is the same program detached into the background."}},
+{"@type":"Question","name":"Does TimerC work on Wayland?","acceptedAnswer":{"@type":"Answer","text":"TimerC is an X11 application; on Wayland it runs through XWayland."}},
+{"@type":"Question","name":"Where does TimerC store its data?","acceptedAnswer":{"@type":"Answer","text":"Locally in ~/.config/timerc: config.conf, data.db and timer.log. Nothing is sent over the network."}}]}
+]}
 </script>
 <style>
 :root{--bg:#0b0712;--panel:#140d22;--text:#e9e4f5;--muted:#a79bc4;--accent:#8b5cf6;--line:#2a1f45}
@@ -53,7 +73,7 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:28px 0;color:var
 <div class="wrap">
 <header>
   <div class="brand"><img src="favicon.svg" width="32" height="32" alt="" style="border:0"> TimerC</div>
-  <nav><a href="#features">Features</a><a href="#screenshots">Screenshots</a><a href="#usage">Usage</a><a href="https://github.com/mkalmousli/timerc">GitHub</a><a href="https://al-mo.de">Author</a></nav>
+  <nav aria-label="Main"><a href="https://al-mo.de/tools/">Tools</a><a href="#features">Features</a><a href="#screenshots">Screenshots</a><a href="#usage">Usage</a><a href="https://github.com/mkalmousli/timerc">GitHub</a><a href="https://al-mo.de">Author</a></nav>
 </header>
 
 <main>
@@ -112,6 +132,16 @@ timerc /8h               # sleep mode</code></pre>
   <figure><img loading="lazy" src="assets/10-alert.png" alt="Fullscreen Time's Up alert"><figcaption>Fullscreen alert</figcaption></figure>
 </section>
 
+<section id="faq">
+  <h2>FAQ</h2>
+  <div class="grid">
+    <div class="card"><h3>How do I install it?</h3><p>Run the one-line installer above. It supports apt, dnf, pacman, zypper, apk and xbps; prebuilt tarballs and <code>.deb</code> packages exist for x86_64, i686, aarch64 and armv7.</p></div>
+    <div class="card"><h3><code>timerc</code> vs <code>timerc-bg</code>?</h3><p><code>timerc</code> blocks until the timer ends (scriptable); <code>timerc-bg</code> detaches into the background.</p></div>
+    <div class="card"><h3>Wayland?</h3><p>TimerC is an X11 app and runs through XWayland.</p></div>
+    <div class="card"><h3>Where is my data?</h3><p>Locally in <code>~/.config/timerc</code>. Nothing leaves your machine.</p></div>
+  </div>
+</section>
+
 <section>
   <h2>Build from source</h2>
 <pre><code>git clone https://github.com/mkalmousli/timerc && cd timerc
@@ -120,7 +150,7 @@ make && make install     # installs to ~/.local</code></pre>
 </main>
 
 <footer>
-  MIT licensed · Made by <a href="https://al-mo.de">Mohamad Almousli</a> · <a href="https://github.com/mkalmousli/timerc">Source</a>
+  <a href="https://al-mo.de">al-mo.de</a> › <a href="https://al-mo.de/tools/">Tools</a> › TimerC · MIT licensed · Made by <a href="https://al-mo.de">Mohamad Almousli</a> · <a href="https://github.com/mkalmousli/timerc">Source</a>
 </footer>
 </div>
 </body>

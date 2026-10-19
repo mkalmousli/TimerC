@@ -12,7 +12,7 @@ No GTK, no Qt, no Python, no Electron. Just Xlib, Xft and SQLite.
 [![License: MIT](https://img.shields.io/badge/license-MIT-8b5cf6.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20X11-lightgrey)
 
-[Website](https://mkalmousli.github.io/timerc/) · [Releases](https://github.com/mkalmousli/timerc/releases) · [Author](https://al-mo.de)
+[Website](https://al-mo.de/tools/timerc/) · [Releases](https://github.com/mkalmousli/timerc/releases) · [Author](https://al-mo.de)
 
 <img src="docs/assets/02-setup-typing.png" width="300" alt="TimerC setup screen">&nbsp;&nbsp;<img src="docs/assets/09-fullscreen.png" width="520" alt="TimerC fullscreen timer">
 

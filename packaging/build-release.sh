@@ -52,7 +52,7 @@ Depends: libc6, libx11-6, libxft2, libxinerama1, libxrandr2, libxrender1, libfon
 Recommends: alsa-utils
 Section: utils
 Priority: optional
-Homepage: https://mkalmousli.github.io/timerc/
+Homepage: https://al-mo.de/tools/timerc/
 Description: Fast native countdown timer for Linux/X11
  Foreground (timerc) and background (timerc-bg) timer written in C with
  procedural audio, sleep mode, insights and generated themes.

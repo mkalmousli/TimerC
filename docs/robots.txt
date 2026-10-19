@@ -1,3 +1,4 @@
 User-agent: *
 Allow: /
-Sitemap: https://mkalmousli.github.io/timerc/sitemap.xml
+# NOTE: crawlers only read robots.txt at the domain root. Keep this line in https://al-mo.de/robots.txt:
+Sitemap: https://al-mo.de/tools/timerc/sitemap.xml
