@@ -28,12 +28,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: '${{ env.TAG }}' }
+      - uses: actions/checkout@v4
+        with: { ref: main, path: _main }
       - uses: docker/setup-qemu-action@v3
       - name: Build in container
         run: |
-          docker run --rm --platform ${{ matrix.platform }} -v "$PWD":/src -w /src \
+          docker run --rm --platform ${{ matrix.platform }} -v "$PWD":/src -v "$PWD/_main/packaging":/pk:ro -w /src \
             -e VERSION="${TAG#v}" -e TARGET=${{ matrix.target }} -e LIBC=${{ matrix.libc }} \
-            -e DEB_ARCH=${{ matrix.deb }} ${{ matrix.image }} sh packaging/build-release.sh
+            -e DEB_ARCH=${{ matrix.deb }} ${{ matrix.image }} sh /pk/build-release.sh
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}-${{ matrix.libc }}
