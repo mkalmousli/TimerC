@@ -10,6 +10,12 @@ if command -v apk >/dev/null 2>&1; then
     libxrandr-dev libxrender-dev fontconfig-dev sqlite-dev
 else
   export DEBIAN_FRONTEND=noninteractive
+  # Debian 11 is EOL: its mirrors moved to archive.debian.org
+  if grep -q '^11' /etc/debian_version 2>/dev/null; then
+    echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list
+    rm -f /etc/apt/sources.list.d/*
+    echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
+  fi
   apt-get update -qq
   apt-get install -y -qq build-essential pkg-config libx11-dev libxft-dev libxinerama-dev \
     libxrandr-dev libxrender-dev libfontconfig1-dev libsqlite3-dev dpkg
