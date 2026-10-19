@@ -108,6 +108,7 @@ int uninstall_main(int argc, char **argv) {
         }
     }
 
+    fflush(stdout);
     int failed = 0, denied = 0;
     for (int i = 0; i < nt; i++) {
         if (unlink(targets[i]) != 0) {
