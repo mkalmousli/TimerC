@@ -18,6 +18,12 @@ No GTK, no Qt, no Python, no Electron. Just Xlib, Xft and SQLite.
 
 </div>
 
+## Demo
+
+<a href="https://github.com/mkalmousli/timerc/raw/main/docs/assets/demo.mp4"><img src="docs/assets/demo-poster.jpg" width="720" alt="▶ Watch the TimerC demo video"></a>
+
+▶ [Watch the demo video](https://github.com/mkalmousli/timerc/raw/main/docs/assets/demo.mp4)
+
 ## Install (one command)
 
 ```sh
@@ -27,6 +33,16 @@ curl -fsSL https://raw.githubusercontent.com/mkalmousli/timerc/main/install.sh |
 Works on Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE, Alpine and Void: it installs any missing
 build dependencies with your package manager, builds TimerC and installs it to `~/.local`
 (no root for TimerC itself). Prefer manual? `make && make install`.
+
+**Standalone binaries** (no dependencies at all, x86_64 and aarch64) are on the
+[releases page](https://github.com/mkalmousli/timerc/releases/latest):
+
+```sh
+curl -fLo timerc https://github.com/mkalmousli/timerc/releases/latest/download/timerc-linux-x86_64-static
+chmod +x timerc && ./timerc 25m focus    # use ...-aarch64-static on ARM64; `ln -s timerc timerc-bg` for the background command
+```
+
+Also available: glibc and musl tarballs (x86_64, i686, aarch64, armv7) and `.deb` packages.
 
 ## Two commands
 

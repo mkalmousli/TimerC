@@ -30,7 +30,7 @@
 <meta name="twitter:image" content="https://al-mo.de/tools/timerc/assets/og.png">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@graph":[
-{"@type":"SoftwareApplication","@id":"https://al-mo.de/tools/timerc/#app","name":"TimerC","alternateName":["timerc","timerc-bg"],"applicationCategory":"UtilitiesApplication","operatingSystem":"Linux","softwareVersion":"1.0.0","description":"Fast native countdown timer for Linux/X11 written in C, with a blocking CLI (timerc) and a background CLI (timerc-bg).","url":"https://al-mo.de/tools/timerc/","image":"https://al-mo.de/tools/timerc/assets/og.png","screenshot":["https://al-mo.de/tools/timerc/assets/02-setup-typing.png","https://al-mo.de/tools/timerc/assets/09-fullscreen.png","https://al-mo.de/tools/timerc/assets/06-insights.png"],"downloadUrl":"https://github.com/mkalmousli/timerc/releases","codeRepository":"https://github.com/mkalmousli/timerc","programmingLanguage":"C","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@id":"https://al-mo.de/#person"}},
+{"@type":"SoftwareApplication","@id":"https://al-mo.de/tools/timerc/#app","name":"TimerC","alternateName":["timerc","timerc-bg"],"applicationCategory":"UtilitiesApplication","operatingSystem":"Linux","softwareVersion":"1.0.0","description":"Fast native countdown timer for Linux/X11 written in C, with a blocking CLI (timerc) and a background CLI (timerc-bg).","url":"https://al-mo.de/tools/timerc/","image":"https://al-mo.de/tools/timerc/assets/og.png","video":{"@type":"VideoObject","name":"TimerC demo","description":"TimerC setup, help overlay, mini timer and fullscreen mode.","thumbnailUrl":"https://al-mo.de/tools/timerc/assets/demo-poster.jpg","contentUrl":"https://al-mo.de/tools/timerc/assets/demo.mp4","uploadDate":"2026-10-19","duration":"PT22S"},"screenshot":["https://al-mo.de/tools/timerc/assets/02-setup-typing.png","https://al-mo.de/tools/timerc/assets/09-fullscreen.png","https://al-mo.de/tools/timerc/assets/06-insights.png"],"downloadUrl":"https://github.com/mkalmousli/timerc/releases","codeRepository":"https://github.com/mkalmousli/timerc","programmingLanguage":"C","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@id":"https://al-mo.de/#person"}},
 {"@type":"Person","@id":"https://al-mo.de/#person","name":"Mohamad Almousli","url":"https://al-mo.de","sameAs":["https://github.com/mkalmousli"]},
 {"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Mohamad Almousli","item":"https://al-mo.de/"},{"@type":"ListItem","position":2,"name":"Tools","item":"https://al-mo.de/tools/"},{"@type":"ListItem","position":3,"name":"TimerC","item":"https://al-mo.de/tools/timerc/"}]},
 {"@type":"FAQPage","mainEntity":[
@@ -73,7 +73,7 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:28px 0;color:var
 <div class="wrap">
 <header>
   <div class="brand"><img src="favicon.svg" width="32" height="32" alt="" style="border:0"> TimerC</div>
-  <nav aria-label="Main"><a href="https://al-mo.de/tools/">Tools</a><a href="#features">Features</a><a href="#screenshots">Screenshots</a><a href="#usage">Usage</a><a href="https://github.com/mkalmousli/timerc">GitHub</a><a href="https://al-mo.de">Author</a></nav>
+  <nav aria-label="Main"><a href="https://al-mo.de/tools/">Tools</a><a href="#demo">Demo</a><a href="#features">Features</a><a href="#screenshots">Screenshots</a><a href="#usage">Usage</a><a href="https://github.com/mkalmousli/timerc">GitHub</a><a href="https://al-mo.de">Author</a></nav>
 </header>
 
 <main>
@@ -86,6 +86,14 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:28px 0;color:var
   </div>
   <figure><img src="assets/09-fullscreen.png" alt="TimerC fullscreen countdown showing 24:57" width="1280" height="800"></figure>
 </div>
+
+<section id="demo">
+  <h2>See it in action</h2>
+  <video controls preload="none" playsinline poster="assets/demo-poster.jpg" width="1280" height="800" style="width:100%;height:auto;border-radius:10px;border:1px solid var(--line)">
+    <source src="assets/demo.mp4" type="video/mp4">
+    Your browser can't play this video — <a href="assets/demo.mp4">download the demo</a>.
+  </video>
+</section>
 
 <section id="usage">
   <h2>Two commands</h2>
