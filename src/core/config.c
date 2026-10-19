@@ -197,27 +197,6 @@ static double dur_sec(const char *s) {
 #define DUR(s)    dur_sec(s)
 #define DUR_MS(s) ((int)(dur_sec(s) * 1000.0 + 0.5))
 
-/* "config" next to the running binary (not ~/.config) — e.g.
- * /mnt/MKSpace/TOOLS/Timer_C/config — creating it if it doesn't exist
- * yet. Used for the sleep-mode custom audio folders (see audio.c).
- * Falls back to "./config" relative to the current directory if the
- * binary's own path can't be resolved (e.g. /proc unavailable). */
-void get_config_dir(char *out, int out_sz) {
-    char exe[MAX_PATH_LEN];
-    char dir[MAX_PATH_LEN + 16];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
-        exe[n] = '\0';
-        char *slash = strrchr(exe, '/');
-        if (slash) *slash = '\0'; else snprintf(exe, sizeof(exe), ".");
-        snprintf(dir, sizeof(dir), "%s/config", exe);
-    } else {
-        snprintf(dir, sizeof(dir), "./config");
-    }
-    mkdir(dir, 0755);
-    snprintf(out, out_sz, "%s", dir);
-}
-
 void config_load(App *app) {
     (void)app;
     memset(&g_config, 0, sizeof(g_config));

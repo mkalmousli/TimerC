@@ -8,6 +8,36 @@ void format_time(int secs, char *out, size_t sz) {
     else        snprintf(out, sz, "%02d:%02d", m, s);
 }
 
+/* Parses "1h30m", "2.5s", "500ms" or a bare number (milliseconds) into ms.
+ * Returns 1 on success, 0 on empty/invalid input. */
+int parse_duration_ms(const char *s, double *ms_out) {
+    double total = 0; int any = 0;
+    while (*s == ' ') s++;
+    while (*s) {
+        char *end;
+        double v = strtod(s, &end);
+        if (end == s) return 0;
+        s = end; any = 1;
+        double mul = 1;
+        if (!strncmp(s, "ms", 2))  { mul = 1;       s += 2; }
+        else if (*s == 's')        { mul = 1000;    s++; }
+        else if (*s == 'm')        { mul = 60000;   s++; }
+        else if (*s == 'h')        { mul = 3600000; s++; }
+        total += v * mul;
+        while (*s == ' ') s++;
+    }
+    if (!any) return 0;
+    *ms_out = total;
+    return 1;
+}
+
+void format_duration_ms(double ms, char *out, size_t sz) {
+    long t = (long)(ms + 0.5);
+    if (t >= 3600000 && t % 60000 == 0) snprintf(out, sz, "%ldh%s%ldm", t / 3600000, "", (t / 60000) % 60);
+    else if (t >= 1000 && t % 1000 == 0) snprintf(out, sz, "%lds", t / 1000);
+    else snprintf(out, sz, "%ldms", t);
+}
+
 /* Extract a leading cluster of switches, in any order: d a r f p (booleans)
  * and u (until-time) and / (sleep mode). Letters may be mixed freely, e.g.
  * "fdu:30", "duf", "/fa30m" all work. If 'u' appears anywhere in the

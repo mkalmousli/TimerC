@@ -1,0 +1,47 @@
+.TH TIMERC 1 "2026" "timerc" "User Commands"
+.SH NAME
+timerc, timerc-bg \- native X11 countdown timer
+.SH SYNOPSIS
+.B timerc
+[\fItime\fR] [\fItask\fR] [\fIoptions\fR]
+.br
+.B timerc-bg
+[\fItime\fR] [\fItask\fR] [\fIoptions\fR]
+.SH DESCRIPTION
+.B timerc
+runs in the foreground and blocks until the timer finishes (usable in scripts:
+\fBtimerc 5m && notify-send done\fR).
+.B timerc-bg
+is the same program detached from the terminal.
+With no arguments an interactive setup screen opens.
+.SH TIME FORMATS
+25m, 1h30m, 45 (minutes), 30:00, 1:30:00, u15:30 (until clock time).
+.SH SWITCHES
+Prefix letters before the time: d shutdown, a alert, f/r fullscreen, p pausable,
+l lock keyboard/mouse, / sleep mode.
+.SH OPTIONS
+.TP
+.BI \-m " alert|shutdown"
+Mode when the timer ends.
+.TP
+.B \-p, \-\-pausable
+Allow pause/resume.
+.TP
+.B \-f, \-\-fullscreen
+Start fullscreen.
+.TP
+.B \-l, \-\-lock
+Disconnect USB keyboard/mouse (needs timerc-lock-helper).
+.TP
+.BI \-\-theme " NAME"
+Select a theme.
+.TP
+.B \-V, \-\-version
+Print version.
+.TP
+.B \-h, \-\-help
+Print help.
+.SH FILES
+~/.config/timerc/ (config.conf, data.db, timer.log)
+.SH AUTHOR
+Mohamad Almousli <https://al-mo.de>

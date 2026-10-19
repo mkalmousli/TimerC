@@ -1,6 +1,4 @@
 # ── Build artifacts ──────────────────────────────────────
-timer
-timer-lock-helper
 *.o
 *.a
 *.so
@@ -66,3 +64,11 @@ Desktop.ini
 *.tmp
 *.temp
 *.cache
+
+# ── TimerC ───────────────────────────────────────────────
+/timerc
+/timerc-bg
+/timerc-lock-helper
+*.conflict-*
+/edit/
+/dist/

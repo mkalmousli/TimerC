@@ -1,25 +1,11 @@
 /* db.c — SQLite session + interaction event logging */
 #include "timer.h"
 
-/* Resolve data.db to live next to the running binary.
-   Falls back to the current working directory if /proc is unavailable. */
+/* data.db lives in the per-user config dir (see get_config_dir). */
 static void resolve_db_path(char *out, int out_sz) {
-    char exe[MAX_PATH_LEN];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
-        exe[n] = '\0';
-        char *slash = strrchr(exe, '/');
-        if (slash) {
-            *slash = '\0';
-            size_t dlen = strlen(exe);
-            if ((int)(dlen + 9) < out_sz) {
-                memcpy(out, exe, dlen);
-                memcpy(out + dlen, "/data.db", 9); /* 8 chars + '\0' */
-                return;
-            }
-        }
-    }
-    memcpy(out, "data.db", 8);
+    char dir[MAX_PATH_LEN];
+    get_config_dir(dir, sizeof(dir));
+    snprintf(out, out_sz, "%s/data.db", dir);
 }
 
 void db_init(App *app) {

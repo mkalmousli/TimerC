@@ -1,0 +1,34 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions: { contents: write }
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04   # oldest supported glibc for the prebuilt binary
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxft-dev libxinerama-dev libxrandr-dev \
+            libxrender-dev libfontconfig1-dev libsqlite3-dev
+      - name: Build
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          make VERSION="$VER"
+          D="timerc-$VER-linux-x86_64"
+          mkdir -p "dist/$D"
+          cp timerc timerc-lock-helper LICENSE README.md timerc.desktop timerc.svg "dist/$D/"
+          cp man/timerc.1 "dist/$D/"
+          ln -s timerc "dist/$D/timerc-bg"
+          tar -C dist -czf "dist/$D.tar.gz" "$D"
+          (cd dist && sha256sum "$D.tar.gz" > "$D.tar.gz.sha256")
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Timer
+Name=TimerC
 Comment=Native X11 countdown timer
-Exec=timer
-Icon=timer
+Exec=timerc
+Icon=timerc
 Terminal=false
 Categories=Utility;

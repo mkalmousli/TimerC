@@ -1,7 +1,7 @@
-/* timer-lock-helper — tiny setuid-root helper used by lock.c so the timer
+/* timerc-lock-helper — tiny setuid-root helper used by lock.c so the timer
  * binary itself never needs to run as root.
  *
- * Usage: timer-lock-helper <0|1> <path>
+ * Usage: timerc-lock-helper <0|1> <path>
  *
  * Does exactly one thing: writes the single byte "0" or "1" to `path`,
  * and only if `path` resolves (via realpath, so symlinks can't redirect

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TimerC — fast native countdown timer for Linux (X11, pure C)</title>
+<meta name="description" content="TimerC is a fast, native countdown timer and Pomodoro-style focus timer for Linux/X11, written in pure C. Foreground and background CLI, procedural audio, sleep mode, insights, themes. One-command install.">
+<meta name="keywords" content="linux timer, countdown timer, pomodoro, x11, cli timer, focus timer, c, xlib, terminal timer, sleep timer, open source">
+<meta name="author" content="Mohamad Almousli">
+<meta name="theme-color" content="#0b0712">
+<link rel="canonical" href="https://mkalmousli.github.io/timerc/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="TimerC — fast native countdown timer for Linux">
+<meta property="og:description" content="Pure C, X11, no toolkit bloat. timerc 25m focus — blocks; timerc-bg 25m focus — backgrounds.">
+<meta property="og:url" content="https://mkalmousli.github.io/timerc/">
+<meta property="og:image" content="https://mkalmousli.github.io/timerc/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://mkalmousli.github.io/timerc/assets/og.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"TimerC","applicationCategory":"UtilitiesApplication","operatingSystem":"Linux","description":"Fast native countdown timer for Linux/X11 written in C.","url":"https://mkalmousli.github.io/timerc/","downloadUrl":"https://github.com/mkalmousli/timerc/releases","codeRepository":"https://github.com/mkalmousli/timerc","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Mohamad Almousli","url":"https://al-mo.de"}}
+</script>
+<style>
+:root{--bg:#0b0712;--panel:#140d22;--text:#e9e4f5;--muted:#a79bc4;--accent:#8b5cf6;--line:#2a1f45}
+@media (prefers-color-scheme:light){:root{--bg:#faf8ff;--panel:#fff;--text:#1b1330;--muted:#5d5278;--line:#e3dcf5}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--accent)}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+header{padding:20px 0;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+header nav a{margin-left:18px;text-decoration:none;color:var(--muted)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px}
+.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center;padding:40px 0 60px}
+h1{font-size:clamp(34px,5vw,56px);line-height:1.1;margin:0 0 16px}
+.lead{color:var(--muted);font-size:19px}
+pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;font-size:14px}
+code{background:var(--panel);padding:1px 6px;border-radius:5px;font-size:.92em}pre code{background:none;padding:0}
+.btn{display:inline-block;background:var(--accent);color:#fff;padding:10px 18px;border-radius:9px;text-decoration:none;font-weight:600;margin:6px 8px 6px 0}
+.btn.alt{background:transparent;border:1px solid var(--line);color:var(--text)}
+img{max-width:100%;height:auto;border-radius:10px;border:1px solid var(--line)}
+section{padding:36px 0}h2{font-size:30px;margin:0 0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card h3{margin:0 0 6px;font-size:17px}.card p{margin:0;color:var(--muted);font-size:15px}
+figure{margin:0}figcaption{color:var(--muted);font-size:14px;margin-top:6px;text-align:center}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px}
+footer{border-top:1px solid var(--line);margin-top:40px;padding:28px 0;color:var(--muted);text-align:center}
+@media(max-width:800px){.hero{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand"><img src="favicon.svg" width="32" height="32" alt="" style="border:0"> TimerC</div>
+  <nav><a href="#features">Features</a><a href="#screenshots">Screenshots</a><a href="#usage">Usage</a><a href="https://github.com/mkalmousli/timerc">GitHub</a><a href="https://al-mo.de">Author</a></nav>
+</header>
+
+<main>
+<div class="hero">
+  <div>
+    <h1>The countdown timer Linux deserves.</h1>
+    <p class="lead">TimerC is a fast, native timer for X11, written in pure C. No GTK, no Qt, no Electron — a ~190&nbsp;KB binary with procedural audio, themes, sleep mode and local insights.</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/mkalmousli/timerc/main/install.sh | sh</code></pre>
+    <a class="btn" href="https://github.com/mkalmousli/timerc/releases">Download</a><a class="btn alt" href="https://github.com/mkalmousli/timerc">View on GitHub</a>
+  </div>
+  <figure><img src="assets/09-fullscreen.png" alt="TimerC fullscreen countdown showing 24:57" width="1280" height="800"></figure>
+</div>
+
+<section id="usage">
+  <h2>Two commands</h2>
+  <div class="grid">
+    <div class="card"><h3><code>timerc</code> — blocking</h3><p>Runs in the foreground and returns when the timer ends. Perfect for scripts: <code>timerc 5m &amp;&amp; notify-send done</code></p></div>
+    <div class="card"><h3><code>timerc-bg</code> — background</h3><p>Same program, detached from the terminal. Start it and keep working.</p></div>
+  </div>
+<pre><code>timerc 25m deep work     # 25 minutes, task name
+timerc u16:30 meeting    # count down to 16:30
+timerc fp1h              # fullscreen + pausable
+timerc a10s              # fullscreen alert at the end
+timerc d30m              # shut down when done
+timerc /8h               # sleep mode</code></pre>
+</section>
+
+<section id="features">
+  <h2>Features</h2>
+  <div class="grid">
+    <div class="card"><h3>Native &amp; tiny</h3><p>Pure C on Xlib/Xft with SQLite. Starts instantly.</p></div>
+    <div class="card"><h3>Smart input</h3><p><code>25m</code>, <code>1h30m</code>, <code>1:30:00</code>, <code>u15:30</code> — with live preview as you type.</p></div>
+    <div class="card"><h3>Procedural audio</h3><p>Cues and a ramping alarm synthesised in code. No sound files, any of ALSA/PulseAudio/PipeWire.</p></div>
+    <div class="card"><h3>Sleep mode</h3><p>Rain and drone ambience that fades in, sustains and wakes you gently.</p></div>
+    <div class="card"><h3>Insights</h3><p>Daily and weekly stats, streaks, hourly heatmap and event log — all stored locally.</p></div>
+    <div class="card"><h3>Live Settings</h3><p>Edit volume, timing, window and startup options in-app with <code>Ctrl+G</code>.</p></div>
+    <div class="card"><h3>Generated themes</h3><p>Fresh contrast-checked dark palettes every launch.</p></div>
+    <div class="card"><h3>Focus lock</h3><p>Optionally disconnect USB keyboard/mouse until time is up, with a safety watchdog.</p></div>
+    <div class="card"><h3>Every distro</h3><p>One-command installer for apt, dnf, pacman, zypper, apk and xbps.</p></div>
+  </div>
+</section>
+
+<section id="screenshots">
+  <h2>Screenshots</h2>
+  <div class="shots">
+    <figure><img loading="lazy" src="assets/02-setup-typing.png" alt="Setup screen with live parsing"><figcaption>Setup with live parsing</figcaption></figure>
+    <figure><img loading="lazy" src="assets/03-help.png" alt="Help overlay"><figcaption>Help overlay</figcaption></figure>
+    <figure><img loading="lazy" src="assets/04-settings.png" alt="Settings categories"><figcaption>Settings</figcaption></figure>
+    <figure><img loading="lazy" src="assets/05-settings-alarm.png" alt="Alarm settings sliders"><figcaption>Alarm options</figcaption></figure>
+    <figure><img loading="lazy" src="assets/07-sleep-preview.png" alt="Sleep mode preview"><figcaption>Sleep-mode plan</figcaption></figure>
+    <figure><img loading="lazy" src="assets/08-running-mini.png" alt="Mini countdown window"><figcaption>Mini timer</figcaption></figure>
+  </div>
+  <p></p>
+  <figure><img loading="lazy" src="assets/06-insights.png" alt="Insights data log with charts"><figcaption>Insights (Ctrl+I)</figcaption></figure>
+  <p></p>
+  <figure><img loading="lazy" src="assets/10-alert.png" alt="Fullscreen Time's Up alert"><figcaption>Fullscreen alert</figcaption></figure>
+</section>
+
+<section>
+  <h2>Build from source</h2>
+<pre><code>git clone https://github.com/mkalmousli/timerc && cd timerc
+make && make install     # installs to ~/.local</code></pre>
+</section>
+</main>
+
+<footer>
+  MIT licensed · Made by <a href="https://al-mo.de">Mohamad Almousli</a> · <a href="https://github.com/mkalmousli/timerc">Source</a>
+</footer>
+</div>
+</body>
+</html>

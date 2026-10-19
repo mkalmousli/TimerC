@@ -19,7 +19,7 @@
 /* Setuid-root helper installed by `sudo make install-lock-helper`. When
  * not running as root, hw_lock_engage() shells out to this instead of
  * writing sysfs directly, so the timer binary itself never needs root. */
-#define LOCK_HELPER_PATH "/usr/local/bin/timer-lock-helper"
+#define LOCK_HELPER_PATH "/usr/local/bin/timerc-lock-helper"
 
 typedef struct {
     char sysfs_path[512]; /* .../authorized */

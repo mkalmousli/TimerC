@@ -101,7 +101,7 @@ Window gl_create_timer_window(App *app, int x, int y, int w, int h, int fullscre
     int nstates = fullscreen ? 3 : 2;
     XChangeProperty(app->dpy, win, app->net_wm_state,
                     XA_ATOM, 32, PropModeReplace, (unsigned char *)states, nstates);
-    XStoreName(app->dpy, win, "Timer");
+    XStoreName(app->dpy, win, "TimerC");
     XMapRaised(app->dpy, win);
     XFlush(app->dpy);
     return win;
