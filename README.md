@@ -20,7 +20,7 @@ No GTK, no Qt, no Python, no Electron. Just Xlib, Xft and SQLite.
 
 ## Demo
 
-<a href="https://al-mo.de/tools/timerc/#demo"><img src="docs/assets/demo.gif" width="640" alt="TimerC demo: setup, help, mini timer, fullscreen"></a>
+<a href="https://al-mo.de/tools/timerc/#demo"><img src="docs/assets/demo.gif" width="640" alt="TimerC demo: typing a time, switching 12 dark themes, pausing, fullscreen alert, terminal UIs, with keys and clicks shown"></a>
 
 ▶ [Watch the full-quality video on the website](https://al-mo.de/tools/timerc/#demo)
 
