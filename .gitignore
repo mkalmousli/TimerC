@@ -23,8 +23,8 @@ data.db-wal
 *.su
 *.idb
 *.pdb
-core
-core.*
+/core
+/core.*
 vgcore.*
 *.core
 *.gcda

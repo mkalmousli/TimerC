@@ -33,7 +33,7 @@ install_deps() {
     $SUDO yum install -y gcc make pkgconfig libX11-devel libXft-devel libXinerama-devel \
       libXrandr-devel libXrender-devel fontconfig-devel sqlite-devel curl
   elif have pacman; then
-    $SUDO pacman -S --needed --noconfirm base-devel pkgconf libx11 libxft libxinerama libxrandr \
+    $SUDO pacman -Sy --needed --noconfirm base-devel pkgconf libx11 libxft libxinerama libxrandr \
       libxrender fontconfig sqlite curl
   elif have zypper; then
     $SUDO zypper --non-interactive install gcc make pkg-config libX11-devel libXft-devel \
