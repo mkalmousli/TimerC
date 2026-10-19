@@ -1,13 +1,13 @@
 CC      = gcc
 VERSION ?= 1.1.0
-MANPAGES = timerc.1 timerc-bg.1 timerc-config.1 timerc-insights.1
+MANPAGES = timerc.1 timerc-bg.1 timerc-config.1 timerc-insights.1 timerc-uninstall.1
 TARGET  = timerc
 
 CORE_SRCS     = src/core/app.c src/core/config.c src/core/parse.c src/core/db.c
 PLATFORM_SRCS = src/platform/linux/lock.c src/platform/linux/linux_audio.c \
                 src/platform/linux/linux_fs.c
 UI_SRCS       = src/ui/draw_common.c src/ui/draw_timer.c src/ui/draw_alert.c
-CLI_SRCS      = src/cli/tui.c
+CLI_SRCS      = src/cli/tui.c src/cli/uninstall.c
 AUDIO_SRCS    = src/audio/synth.c
 
 SRCS = $(CORE_SRCS) $(PLATFORM_SRCS) $(UI_SRCS) $(AUDIO_SRCS) $(CLI_SRCS)
@@ -68,12 +68,13 @@ DATADIR = $(PREFIX)/share
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(BINDIR)/$(TARGET)
 	ln -sf $(TARGET) $(BINDIR)/$(TARGET)-bg
+	ln -sf $(TARGET) $(BINDIR)/$(TARGET)-uninstall
 	for m in $(MANPAGES); do install -Dm644 man/$$m $(DATADIR)/man/man1/$$m; done
 	install -Dm644 timerc.desktop $(DATADIR)/applications/timerc.desktop
 	install -Dm644 timerc.svg $(DATADIR)/icons/hicolor/scalable/apps/timerc.svg
 	@update-desktop-database $(DATADIR)/applications >/dev/null 2>&1 || true
 	@gtk-update-icon-cache -f $(DATADIR)/icons/hicolor >/dev/null 2>&1 || true
-	@echo "Installed timerc and timerc-bg to $(BINDIR)"
+	@echo "Installed timerc, timerc-bg and timerc-uninstall to $(BINDIR)"
 	@echo "Optional: 'sudo make install-lock-helper' enables 'timerc -l' (USB input lock)."
 
 # Same lock-helper install step on its own, if you skipped it above or
@@ -85,7 +86,7 @@ install-lock-helper: $(LOCK_HELPER)
 	@echo "USB keyboard/mouse for the timerc's duration, no sudo needed."
 
 uninstall:
-	rm -f $(BINDIR)/$(TARGET) $(BINDIR)/$(TARGET)-bg
+	rm -f $(BINDIR)/$(TARGET) $(BINDIR)/$(TARGET)-bg $(BINDIR)/$(TARGET)-uninstall
 	for m in $(MANPAGES); do rm -f $(DATADIR)/man/man1/$$m; done
 	rm -f $(DATADIR)/applications/timerc.desktop
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/timerc.svg

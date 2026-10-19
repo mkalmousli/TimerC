@@ -1,0 +1,49 @@
+.TH TIMERC-UNINSTALL 1 "2026" "timerc 1.1" "User Commands"
+.SH NAME
+timerc-uninstall \- remove timerc from the system
+.SH SYNOPSIS
+.B timerc-uninstall
+[\fB\-y\fR] [\fB\-n\fR] [\fB\-\-purge\fR]
+.br
+.B timerc uninstall
+[\fB\-y\fR] [\fB\-n\fR] [\fB\-\-purge\fR]
+.SH DESCRIPTION
+Removes everything the installer put under the install prefix: the
+.BR timerc ,
+.B timerc-bg
+and
+.B timerc-uninstall
+commands, the man pages, the desktop entry and the icon, plus the setuid
+.B timerc-lock-helper
+if present. The prefix is derived from where the running binary lives (it must
+be in a \fIbin/\fR directory), so it works for any \fBPREFIX\fR, including the
+default \fI~/.local\fR. The files are listed first and removed only after you
+confirm.
+.PP
+Your settings, history and log in \fI~/.config/timerc\fR are kept unless
+.B \-\-purge
+is given.
+.PP
+If timerc was installed from the \fB.deb\fR package, use
+.B sudo apt remove timerc
+instead; the command says so and exits.
+.SH OPTIONS
+.TP
+.BR \-y ", " \-\-yes
+Do not ask for confirmation (required when not run from a terminal).
+.TP
+.BR \-n ", " \-\-dry\-run
+Only list what would be removed.
+.TP
+.B \-\-purge
+Also delete \fIconfig.conf\fR, \fIdata.db\fR and \fItimer.log\fR.
+.TP
+.BR \-h ", " \-\-help
+Print help.
+.SH EXIT STATUS
+0 on success, 1 if something could not be removed (the command then suggests
+re-running with sudo) or the user aborted, 2 for a usage error.
+.SH SEE ALSO
+.BR timerc (1)
+.SH AUTHOR
+Mohamad Almousli <https://al-mo.de>

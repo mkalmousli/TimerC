@@ -885,6 +885,9 @@ static void print_usage(const char *prog, FILE *out) {
 "  timerc insights                  statistics and session log (TUI; text when piped)\n"
 "  timerc about                     syntax, keys, credits\n"
 "\n"
+"UNINSTALL\n"
+"  timerc-uninstall [-y] [-n] [--purge]   remove TimerC (--purge also deletes settings and history)\n"
+"\n"
 "TESTING\n"
 "  timerc test alarm|preparing|sleeping|waking|all   play the generated audio (30 s each)\n"
 "  timerc /testsleep 8h                              print the sleep-mode plan\n"
@@ -1043,6 +1046,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (!strcmp(base, "timerc-uninstall"))
+        return uninstall_main(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "uninstall"))
+        return uninstall_main(argc - 1, argv + 1);
     if (argc > 1 && (!strcmp(argv[1], "config") || !strcmp(argv[1], "settings") ||
                      !strcmp(argv[1], "insights") || !strcmp(argv[1], "stats") ||
                      !strcmp(argv[1], "about")))

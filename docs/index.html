@@ -34,6 +34,7 @@
 {"@type":"Person","@id":"https://al-mo.de/#person","name":"Mohamad Almousli","url":"https://al-mo.de","sameAs":["https://github.com/mkalmousli"]},
 {"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Mohamad Almousli","item":"https://al-mo.de/"},{"@type":"ListItem","position":2,"name":"TimerC","item":"https://al-mo.de/tools/timerc/"}]},
 {"@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"How do I uninstall TimerC?","acceptedAnswer":{"@type":"Answer","text":"Run timerc-uninstall. It lists what it removes and asks to confirm. Add --purge to also delete your settings and history. Installed from the .deb? Use sudo apt remove timerc."}},
 {"@type":"Question","name":"How do I install TimerC on Linux?","acceptedAnswer":{"@type":"Answer","text":"Run: curl -fsSL https://raw.githubusercontent.com/mkalmousli/timerc/main/install.sh | sh. It supports apt, dnf, pacman, zypper, apk and xbps. Prebuilt tarballs and .deb packages exist for x86_64, i686, aarch64 and armv7."}},
 {"@type":"Question","name":"What is the difference between timerc and timerc-bg?","acceptedAnswer":{"@type":"Answer","text":"timerc runs in the foreground and blocks until the timer ends, so it works in shell scripts. timerc-bg is the same program detached into the background."}},
 {"@type":"Question","name":"Does TimerC work on Wayland?","acceptedAnswer":{"@type":"Answer","text":"TimerC is an X11 application; on Wayland it runs through XWayland."}},
@@ -102,6 +103,7 @@ footer{border-top:1px solid var(--line);margin-top:40px;padding:28px 0;color:var
   <div class="grid">
     <div class="card"><h3><code>timerc</code> — blocking</h3><p>Runs in the foreground and returns when the timer ends. Perfect for scripts: <code>timerc 5m &amp;&amp; notify-send done</code></p></div>
     <div class="card"><h3><code>timerc-bg</code> — background</h3><p>Same program, detached from the terminal. Start it and keep working.</p></div>
+    <div class="card"><h3><code>timerc-uninstall</code> — remove</h3><p>Cleanly removes TimerC from any install prefix. Add <code>--purge</code> to delete your data too.</p></div>
   </div>
 <pre><code>timerc 25m deep work     # 25 minutes, task name
 timerc u16:30 meeting    # count down to 16:30
@@ -144,10 +146,11 @@ timerc /8h               # sleep mode</code></pre>
 <section id="faq">
   <h2>FAQ</h2>
   <div class="grid">
+    <div class="card"><h3>How do I uninstall it?</h3><p>Run <code>timerc-uninstall</code> (add <code>--purge</code> to delete settings and history too). For the .deb: <code>sudo apt remove timerc</code>.</p></div>
     <div class="card"><h3>How do I install it?</h3><p>Run the one-line installer above. It supports apt, dnf, pacman, zypper, apk and xbps; prebuilt tarballs and <code>.deb</code> packages exist for x86_64, i686, aarch64 and armv7.</p></div>
     <div class="card"><h3><code>timerc</code> vs <code>timerc-bg</code>?</h3><p><code>timerc</code> blocks until the timer ends (scriptable); <code>timerc-bg</code> detaches into the background.</p></div>
     <div class="card"><h3>Wayland?</h3><p>TimerC is an X11 app and runs through XWayland.</p></div>
-    <div class="card"><h3>Where is my data?</h3><p>Locally in <code>~/.config/timerc</code>. Nothing leaves your machine.</p></div>
+    <div class="card"><h3>Where is my data?</h3><p>Locally in <code>~/.config/timerc</code>. Nothing leaves your machine. <code>timerc-uninstall --purge</code> deletes it.</p></div>
   </div>
 </section>
 
@@ -155,6 +158,14 @@ timerc /8h               # sleep mode</code></pre>
   <h2>Build from source</h2>
 <pre><code>git clone https://github.com/mkalmousli/timerc && cd timerc
 make && make install     # installs to ~/.local</code></pre>
+</section>
+
+<section id="uninstall">
+  <h2>Uninstall</h2>
+  <p>One command removes the binaries, man pages, desktop entry and icon. Your settings and history are kept unless you ask otherwise.</p>
+<pre><code>timerc-uninstall            # lists what it removes, asks to confirm
+timerc-uninstall --purge    # also delete ~/.config/timerc (settings, history)
+timerc-uninstall -n         # dry run; -y skips the prompt</code></pre>
 </section>
 </main>
 

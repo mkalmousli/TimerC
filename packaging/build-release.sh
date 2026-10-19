@@ -49,6 +49,7 @@ mkdir -p "dist/$NAME"
 cp timerc timerc-lock-helper LICENSE README.md timerc.desktop timerc.svg "dist/$NAME/"
 mkdir -p "dist/$NAME/man" && cp man/*.1 "dist/$NAME/man/"
 ln -s timerc "dist/$NAME/timerc-bg"
+ln -s timerc "dist/$NAME/timerc-uninstall"
 tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 rm -rf "dist/$NAME"
 # Single-file standalone download (static builds only)
@@ -60,6 +61,7 @@ if [ "$LIBC" = glibc ] && [ -n "${DEB_ARCH:-}" ]; then
            "$P/usr/share/icons/hicolor/scalable/apps" "$P/usr/share/man/man1"
   install -m755 timerc "$P/usr/bin/timerc"
   ln -s timerc "$P/usr/bin/timerc-bg"
+  ln -s timerc "$P/usr/bin/timerc-uninstall"
   install -m644 timerc.desktop "$P/usr/share/applications/timerc.desktop"
   install -m644 timerc.svg "$P/usr/share/icons/hicolor/scalable/apps/timerc.svg"
   for m in man/*.1; do gzip -9n -c "$m" > "$P/usr/share/man/man1/$(basename "$m").gz"; done

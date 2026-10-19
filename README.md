@@ -118,10 +118,19 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 sudo apt install build-essential pkg-config libx11-dev libxft-dev libxinerama-dev \
      libxrandr-dev libxrender-dev libfontconfig1-dev libsqlite3-dev
 make            # builds timerc and timerc-lock-helper
-make install    # PREFIX=~/.local by default; also installs timerc-bg, man page, desktop entry
+make install    # PREFIX=~/.local by default; also installs timerc-bg, timerc-uninstall, man pages, desktop entry
 ```
 
-Other distros: see [`install.sh`](install.sh) for the package names. `make uninstall` removes everything.
+Other distros: see [`install.sh`](install.sh) for the package names. 
+### Uninstall
+
+```sh
+timerc-uninstall             # lists what it removes, asks to confirm
+timerc-uninstall --purge     # also deletes settings, history and log (~/.config/timerc)
+timerc-uninstall -n          # dry run;  -y skips the prompt
+```
+
+It works for any install prefix (`timerc uninstall` is the same command). Installed from the `.deb`? Use `sudo apt remove timerc`. From a source checkout, `make uninstall` also works.
 
 ### Input lock helper (optional)
 
