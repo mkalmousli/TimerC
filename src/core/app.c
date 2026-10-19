@@ -688,15 +688,8 @@ static void handle_event(App *app, XEvent *ev) {
             break;
         }
         case ButtonPress:
-            /* The volume slider lives at the bottom of the alert screen —
-             * clicking/dragging it must not also dismiss the alert. */
-            if (alert_vol_handle_click(app, i, ev->xbutton.x, ev->xbutton.y)) return;
             dismiss_alert(app); return;
-        case ButtonRelease:
-            alert_vol_handle_release(app);
-            return;
         case MotionNotify:
-            alert_vol_handle_motion(app, i, ev->xmotion.x, ev->xmotion.y);
             return;
         }
         return;
@@ -857,18 +850,51 @@ static int app_init(App *app) {
     return 1;
 }
 
-static void print_usage(const char *prog) {
-    fprintf(stderr,
-        "Usage: timerc [time] [task] [options]   run in the foreground (blocks until done)\n"
-        "       timerc-bg [time] [task] [options]  same, but detached into the background\n\n"
-        "Time formats: 25m  1h30m  45  30:00  1:30:00  u15:30  u1520\n"
-        "Switches (prefix):  d=shutdown  a=alert  f/r=fullscreen  p=pausable  l=lock input\n"
-        "Options: -m alert|shutdown  -p  -f  -l  --theme NAME  --gl  -V  -h\n"
-        "Terminal UIs: %s config | insights | about   (settings, statistics, help)\n"
-        "              %s config list|get KEY|set KEY VALUE|reset\n"
-        "Subcommand: %s test preparing|sleeping|waking|alarm|all  (audition sleep-mode audio)\n"
-        "Example: %s 25m focus  |  %s u16:30 meeting  |  %s\n",
-        prog, prog, prog, prog, prog, prog);
+static void print_usage(const char *prog, FILE *out) {
+    (void)prog;
+    fprintf(out,
+"TimerC " TIMERC_VERSION " - a native countdown timer for X11\n"
+"\n"
+"USAGE\n"
+"  timerc    [SWITCHES][TIME] [TASK] [OPTIONS]   run in the foreground, wait until done\n"
+"  timerc-bg [SWITCHES][TIME] [TASK] [OPTIONS]   same, detached from the terminal\n"
+"  timerc                                        open the setup window\n"
+"\n"
+"TIME\n"
+"  25m  1h30m  90s  45 (minutes)  30:00  1:30:00     duration\n"
+"  u15:30   u:30                                     until a clock time / minute\n"
+"  /8h                                               sleep mode (ambient audio, gentle wake)\n"
+"\n"
+"SWITCHES (letters before the time, combinable, e.g. fp25m)\n"
+"  d shutdown at the end   a fullscreen alert   f fullscreen   p pausable\n"
+"  l lock keyboard/mouse (needs timerc-lock-helper)\n"
+"\n"
+"OPTIONS\n"
+"  -m alert|shutdown   mode at the end        -p, --pausable     allow pause (Space)\n"
+"  -f, --fullscreen    start fullscreen       -l, --lock         lock input\n"
+"  --theme NAME        pick a theme           --gl               OpenGL renderer\n"
+"  -V, --version       print version          -h, --help         this help\n"
+"\n"
+"TERMINAL UIS (settings, statistics and help live here, not in the window)\n"
+"  timerc config                    interactive settings, tests and about (TUI)\n"
+"  timerc config list               show all options with defaults\n"
+"  timerc config get KEY            print one value\n"
+"  timerc config set KEY VALUE      change one value\n"
+"  timerc config reset [KEY]        restore defaults\n"
+"  timerc config path               print the config file path\n"
+"  timerc insights                  statistics and session log (TUI; text when piped)\n"
+"  timerc about                     syntax, keys, credits\n"
+"\n"
+"TESTING\n"
+"  timerc test alarm|preparing|sleeping|waking|all   play the generated audio (30 s each)\n"
+"  timerc /testsleep 8h                              print the sleep-mode plan\n"
+"  (all of these are also available in 'timerc config', screen 3)\n"
+"\n"
+"EXAMPLES\n"
+"  timerc 25m write report        timerc-bg u16:30 meeting\n"
+"  timerc pf45m deep work         timerc 5m && notify-send done\n"
+"\n"
+"More: man timerc, man timerc-config, man timerc-insights    https://al-mo.de/tools/timerc/\n");
 }
 
 /* ── `timer test` — foreground CLI audition of the procedurally
@@ -1008,7 +1034,7 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-            print_usage(base);
+            print_usage(base, stdout);
             return 0;
         }
         if (!strcmp(argv[i], "-V") || !strcmp(argv[i], "--version")) {
@@ -1054,7 +1080,7 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strcmp(a, "-h") || !strcmp(a, "--help")) { print_usage(base); return 0; }
+        if (!strcmp(a, "-h") || !strcmp(a, "--help")) { print_usage(base, stdout); return 0; }
         if (!strcmp(a, "--gl")) { app.use_gl = 1; continue; }
         if (!strcmp(a, "-p") || !strcmp(a, "--pausable"))   { cli_pausable   = 1; continue; }
         if (!strcmp(a, "-f") || !strcmp(a, "--fullscreen"))  { cli_fullscreen = 1; continue; }
@@ -1100,7 +1126,7 @@ int main(int argc, char **argv) {
         ParseResult pr; parse_time_input(combined, &pr);
         if (pr.seconds <= 0) {
             fprintf(stderr, "Error: invalid time '%s'\n", combined);
-            print_usage(argv[0]); return 1;
+            print_usage(argv[0], stderr); return 1;
         }
         app.total_seconds = app.remaining_seconds = pr.seconds;
         app.remaining_exact = (double)pr.seconds;

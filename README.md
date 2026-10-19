@@ -81,6 +81,8 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 - **Sleep mode** — rain/drone ambience that fades in, sustains and wakes you gently; `/testsleep 8h` previews the plan.
 - **Insights in the terminal** (`timerc insights`) — daily/weekly stats, hourly heatmap and a per-session event log, all local in SQLite.
 - **Settings in the terminal** (`timerc config`) — a small TUI for every tunable, plus `config list|get|set|reset` for scripts.
+- **Test things in the TUI** — audition the alarm and each sleep-mode phase, preview the sleep plan, try the fullscreen alert.
+- **Man pages** — `man timerc`, `timerc-bg`, `timerc-config`, `timerc-insights`.
 - **A minimal GUI** — the window only does three things: take your input, show the timer, ring the alarm.
 - **Input lock** (`-l`) — optionally disconnects USB keyboard/mouse at kernel level for deep focus, with a watchdog that always gives them back.
 - **Shutdown mode**, until-time timers, multi-monitor aware, `timerc about` for syntax and keys.
@@ -91,8 +93,8 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 |---|---|---|
 | ![Setup](docs/assets/01-setup.png) | ![Typing](docs/assets/02-setup-typing.png) | ![About](docs/assets/03-about.png) |
 | Setup | Live parsing | `timerc about` |
-| ![Settings](docs/assets/04-settings.png) | ![Insights](docs/assets/06-insights.png) | |
-| `timerc config` | `timerc insights` | |
+| ![Settings](docs/assets/04-settings.png) | ![Insights](docs/assets/06-insights.png) | ![Test](docs/assets/05-test.png) |
+| `timerc config` | `timerc insights` | Test screen (audio, sleep plan, alert) |
 
 | Mini timer | Fullscreen | Alert |
 |---|---|---|

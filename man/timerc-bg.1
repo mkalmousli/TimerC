@@ -1,0 +1,31 @@
+.TH TIMERC-BG 1 "2026" "timerc 1.1" "User Commands"
+.SH NAME
+timerc-bg \- start a timerc timer in the background
+.SH SYNOPSIS
+.B timerc-bg
+[\fItime\fR] [\fItask\fR] [\fIoptions\fR]
+.SH DESCRIPTION
+.B timerc-bg
+is the same program as
+.BR timerc (1),
+selected by the name it is run under. It accepts exactly the same time formats,
+switches and options, but detaches from the terminal (double fork, new session,
+stdio to /dev/null) and returns to the shell immediately. The timer keeps
+running after the terminal or SSH session is closed.
+.PP
+Use
+.B timerc
+instead when a script should wait for the timer to finish.
+.SH EXAMPLES
+.nf
+timerc-bg 25m focus
+timerc-bg d1h        # shut down in one hour
+.fi
+.SH FILES
+Same as
+.BR timerc (1);
+errors are written to \fI~/.config/timerc/timer.log\fR since there is no terminal.
+.SH SEE ALSO
+.BR timerc (1)
+.SH AUTHOR
+Mohamad Almousli <https://al-mo.de>

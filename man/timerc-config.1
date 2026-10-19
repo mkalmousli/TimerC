@@ -1,0 +1,96 @@
+.TH TIMERC-CONFIG 1 "2026" "timerc 1.1" "User Commands"
+.SH NAME
+timerc-config \- settings, tests and help for timerc, in the terminal
+.SH SYNOPSIS
+.B timerc config
+.br
+.B timerc config list
+.br
+.B timerc config get
+.I KEY
+.br
+.B timerc config set
+.I KEY VALUE
+.br
+.B timerc config reset
+[\fIKEY\fR]
+.br
+.B timerc config path
+.br
+.B timerc about
+.SH DESCRIPTION
+Without a subcommand,
+.B timerc config
+opens a full-screen terminal UI with four screens, switched with the number keys:
+.TP
+.B 1 Settings
+Every option, grouped in categories (Alarm, Sleep, Window, Timing, Startup).
+Changes are saved immediately and apply to the next timer you start.
+.TP
+.B 2 Insights
+The statistics browser; see
+.BR timerc-insights (1).
+.TP
+.B 3 Test
+Audition things without starting a real timer: the alarm, each sleep-mode phase,
+the sleep-mode plan for a duration you type, and the fullscreen alert. Output of
+the test is shown live; any key stops it.
+.TP
+.B 4 About
+Timer syntax, keys and credits.
+.PP
+The UI needs only a terminal: no curses library. It redraws on resize, works
+down to 32x8 characters, and always restores the terminal on exit (including on
+Ctrl+C or a closed connection). When standard input or output is not a terminal,
+\fBconfig\fR prints \fBconfig list\fR and \fBabout\fR prints plain text.
+.SH KEYS (SETTINGS)
+.TP
+.BR Up / Down ", " j / k
+Select an option.
+.TP
+.BR Left / Right ", " h / l ", " - / +
+Adjust by one step; PgUp/PgDn adjust by ten steps. Toggles flip on/off.
+.TP
+.B Tab, Shift+Tab
+Next / previous category.
+.TP
+.B Enter
+Type an exact value (numbers, or durations such as 1m30s for options measured in
+seconds), or toggle a switch.
+.TP
+.B r, R
+Reset the option / reset everything to defaults.
+.TP
+.B q, Esc, Ctrl+C
+Quit.
+.SH SUBCOMMANDS
+.TP
+.B list
+Print every option with its value and default.
+.TP
+.BI get " KEY"
+Print one value.
+.TP
+.BI set " KEY VALUE"
+Validate, clamp to the allowed range and save.
+.TP
+.B reset \fR[\fIKEY\fR]
+Restore one option, or all of them, to defaults.
+.TP
+.B path
+Print the path of the configuration file.
+.SH EXIT STATUS
+0 on success, 1 for an unknown option or invalid value, 2 for a usage error.
+.SH FILES
+.I ~/.config/timerc/config.conf
+.SH EXAMPLES
+.nf
+timerc config set alarm_volume_max_percent 60
+timerc config get alarm_ramp_seconds
+timerc config list | grep sleep
+.fi
+.SH SEE ALSO
+.BR timerc (1),
+.BR timerc-insights (1)
+.SH AUTHOR
+Mohamad Almousli <https://al-mo.de>

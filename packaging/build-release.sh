@@ -46,7 +46,8 @@ NAME="timerc-$VERSION-linux-$TARGET"
 [ "$LIBC" = musl ] && NAME="$NAME-musl"
 [ "${STATIC:-0}" = 1 ] && NAME="timerc-$VERSION-linux-$TARGET-static"
 mkdir -p "dist/$NAME"
-cp timerc timerc-lock-helper LICENSE README.md timerc.desktop timerc.svg man/timerc.1 "dist/$NAME/"
+cp timerc timerc-lock-helper LICENSE README.md timerc.desktop timerc.svg "dist/$NAME/"
+mkdir -p "dist/$NAME/man" && cp man/*.1 "dist/$NAME/man/"
 ln -s timerc "dist/$NAME/timerc-bg"
 tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 rm -rf "dist/$NAME"
@@ -61,8 +62,7 @@ if [ "$LIBC" = glibc ] && [ -n "${DEB_ARCH:-}" ]; then
   ln -s timerc "$P/usr/bin/timerc-bg"
   install -m644 timerc.desktop "$P/usr/share/applications/timerc.desktop"
   install -m644 timerc.svg "$P/usr/share/icons/hicolor/scalable/apps/timerc.svg"
-  gzip -9n -c man/timerc.1 > "$P/usr/share/man/man1/timerc.1.gz"
-  ln -s timerc.1.gz "$P/usr/share/man/man1/timerc-bg.1.gz"
+  for m in man/*.1; do gzip -9n -c "$m" > "$P/usr/share/man/man1/$(basename "$m").gz"; done
   cat > "$P/DEBIAN/control" <<CTRL
 Package: timerc
 Version: $VERSION

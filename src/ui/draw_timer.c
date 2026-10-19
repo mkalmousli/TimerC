@@ -206,7 +206,6 @@ static void cfg_draw_clock(App *app, Drawable buf, const Theme *th,
 static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
                            const Theme *th, const CfgLayout *L) {
     const int input_h = 54;
-    const int chip_h  = 24;
     ParseResult *pr = &app->cfg_preview;
 
     int fx = 24, fy = L->in_top, fw = g_config.cfg_w - 48, fh = input_h;
@@ -245,42 +244,6 @@ static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
         }
     }
 
-    struct { int active; const char *label;
-             unsigned long bg, fg, border; } chips[] = {
-        { pr->sw_shutdown,   "d  shutdown",   th->danger,      0xf0e8d8UL, th->danger },
-        { pr->sw_alert,      "a  alert",      th->accent_soft, th->accent, th->border },
-        { pr->sw_fullscreen, "f  fullscreen", th->accent_soft, th->accent, th->border },
-        { pr->sw_pausable,   "p  pausable",   th->accent_soft, th->accent, th->border },
-        { pr->sw_lock,       "l  lock input", th->danger,      0xf0e8d8UL, th->danger },
-        { pr->sw_sleep,      "/  sleep",      th->accent_soft, th->accent, th->border },
-    };
-    XftFont *cf = get_font(app, 9, 1);
-    if (cf) {
-        int n_active = 0, chip_widths[6] = {0};
-        for (int i = 0; i < 6; i++) {
-            if (!chips[i].active) continue;
-            chip_widths[i] = text_width(app, cf, chips[i].label) + 22;
-            n_active++;
-        }
-        if (n_active > 0) {
-            int total_w = -6;
-            for (int i = 0; i < 6; i++)
-                if (chips[i].active) total_w += chip_widths[i] + 6;
-            int cx2 = (g_config.cfg_w - total_w) / 2, cy = L->ch_top;
-            for (int i = 0; i < 6; i++) {
-                if (!chips[i].active) continue;
-                int cw = chip_widths[i];
-                fill_rect(app, buf, chips[i].bg, cx2, cy, cw, chip_h);
-                draw_rect_outline(app, buf, chips[i].border, cx2, cy, cw, chip_h);
-                int tw2 = text_width(app, cf, chips[i].label);
-                xft_draw_string(app, draw, cf, chips[i].fg,
-                                cx2 + (cw - tw2) / 2, cy + cf->ascent + 2,
-                                chips[i].label);
-                cx2 += cw + 6;
-            }
-        }
-    }
-
     if (pr->until[0]) {
         char big[16] = "";
         if (pr->seconds > 0) format_time(pr->seconds, big, sizeof(big));
@@ -312,18 +275,6 @@ static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
 }
 
 
-/* ── Footer hint (setup screen) ────────────────────────────
- * Settings, statistics and help live in the terminal. */
-
-static void cfg_draw_footer(App *app, Drawable buf, XftDraw *draw, const Theme *th) {
-    XftFont *f = get_font(app, 9, 1);
-    if (!f) return;
-    (void)buf;
-    xft_draw_string_centered(app, draw, f, th->text_muted, g_config.cfg_w / 2,
-                             g_config.cfg_h - 22,
-                             "terminal:  timerc config  ·  timerc insights  ·  timerc about");
-}
-
 void draw_config_anim(App *app) {
     if (!app->cfg_win) return;
     ensure_cfg_buf(app);
@@ -343,7 +294,6 @@ void draw_config_anim(App *app) {
     if (!qf) qf = get_font(app, 16, 0);
     if (qf) draw_quote_morph(app, draw, qf, buf, th, g_config.cfg_w / 2, L.q_base, g_config.cfg_w - 48);
     cfg_draw_panel(app, buf, draw, th, &L);
-    cfg_draw_footer(app, buf, draw, th);
     cfg_draw_borders(app, buf, th);
 
     if (app->cfg_buf)
@@ -369,7 +319,6 @@ void draw_config_panel(App *app) {
 
     cfg_draw_cyber_bg(app, buf, th, 0, y, g_config.cfg_w, h, monotonic_now());
     cfg_draw_panel(app, buf, draw, th, &L);
-    cfg_draw_footer(app, buf, draw, th);
     cfg_draw_borders(app, buf, th);
     cfg_present_region(app, y, h);
     cfg_present_borders(app);
@@ -396,7 +345,6 @@ void draw_config(App *app) {
     if (!qf) qf = get_font(app, 16, 0);
     if (qf) draw_quote_morph(app, draw, qf, buf, th, W / 2, L.q_base, W - 48);
     cfg_draw_panel(app, buf, draw, th, &L);
-    cfg_draw_footer(app, buf, draw, th);
     cfg_draw_borders(app, buf, th);
 
     if (app->cfg_buf)

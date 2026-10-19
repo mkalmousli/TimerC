@@ -1,0 +1,46 @@
+.TH TIMERC-INSIGHTS 1 "2026" "timerc 1.1" "User Commands"
+.SH NAME
+timerc-insights \- statistics and session log for timerc
+.SH SYNOPSIS
+.B timerc insights
+.br
+.B timerc stats
+.SH DESCRIPTION
+Shows what the local session database
+(\fI~/.config/timerc/data.db\fR) knows: totals, completed versus stopped timers,
+focused versus planned time, a per-day chart, an hour-of-day heatmap, the
+sessions of a chosen day and the event log of the selected session.
+.PP
+On a terminal it opens a full-screen UI (also reachable as screen 2 of
+.BR "timerc config" ).
+When output is not a terminal it prints a plain-text summary of all time and of
+today instead.
+.SH KEYS
+.TP
+.BR Left / Right ", " h / l
+Previous / next day.
+.TP
+.B t
+Jump to today.
+.TP
+.BR Up / Down ", " j / k
+Select a session.
+.TP
+.B PgUp / PgDn
+Scroll its events.
+.TP
+.B r
+Reload.
+.TP
+.B 1 2 3 4
+Switch to Settings, Insights, Test or About.
+.TP
+.B q, Esc, Ctrl+C
+Quit.
+.SH FILES
+.I ~/.config/timerc/data.db
+.SH SEE ALSO
+.BR timerc (1),
+.BR timerc-config (1)
+.SH AUTHOR
+Mohamad Almousli <https://al-mo.de>

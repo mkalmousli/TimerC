@@ -1,5 +1,6 @@
 CC      = gcc
 VERSION ?= 1.1.0
+MANPAGES = timerc.1 timerc-bg.1 timerc-config.1 timerc-insights.1
 TARGET  = timerc
 
 CORE_SRCS     = src/core/app.c src/core/config.c src/core/parse.c src/core/db.c
@@ -67,8 +68,7 @@ DATADIR = $(PREFIX)/share
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(BINDIR)/$(TARGET)
 	ln -sf $(TARGET) $(BINDIR)/$(TARGET)-bg
-	install -Dm644 man/timerc.1 $(DATADIR)/man/man1/timerc.1
-	ln -sf timerc.1 $(DATADIR)/man/man1/timerc-bg.1
+	for m in $(MANPAGES); do install -Dm644 man/$$m $(DATADIR)/man/man1/$$m; done
 	install -Dm644 timerc.desktop $(DATADIR)/applications/timerc.desktop
 	install -Dm644 timerc.svg $(DATADIR)/icons/hicolor/scalable/apps/timerc.svg
 	@update-desktop-database $(DATADIR)/applications >/dev/null 2>&1 || true
@@ -86,7 +86,7 @@ install-lock-helper: $(LOCK_HELPER)
 
 uninstall:
 	rm -f $(BINDIR)/$(TARGET) $(BINDIR)/$(TARGET)-bg
-	rm -f $(DATADIR)/man/man1/timerc.1 $(DATADIR)/man/man1/timerc-bg.1
+	for m in $(MANPAGES); do rm -f $(DATADIR)/man/man1/$$m; done
 	rm -f $(DATADIR)/applications/timerc.desktop
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/timerc.svg
 	@echo "Uninstalled $(TARGET). If installed, remove the lock helper with: sudo make uninstall-lock-helper"

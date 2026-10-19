@@ -15,6 +15,8 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <poll.h>
 #include <unistd.h>
 #include <errno.h>
@@ -67,7 +69,7 @@ static volatile sig_atomic_t g_quit, g_resized;
 static void term_restore(void) {
     if (!g_raw) return;
     g_raw = 0;
-    const char *s = "\033[?25h\033[?1049l";
+    const char *s = "\033[?7h\033[?25h\033[?1049l";
     if (write(STDOUT_FILENO, s, strlen(s)) < 0) { /* nothing useful to do */ }
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved_tio);
 }
@@ -92,7 +94,7 @@ static int term_raw(void) {
     sigaction(SIGHUP, &sa, NULL);
     sigaction(SIGWINCH, &sa, NULL);
 
-    const char *s = "\033[?1049h\033[?25l";
+    const char *s = "\033[?1049h\033[?25l\033[?7l";
     if (write(STDOUT_FILENO, s, strlen(s)) < 0) return 0;
     return 1;
 }
@@ -102,8 +104,6 @@ static void term_size(void) {
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) {
         g_rows = ws.ws_row; g_cols = ws.ws_col;
     }
-    if (g_rows < 10) g_rows = 10;
-    if (g_cols < 40) g_cols = 40;
 }
 
 typedef enum {
@@ -112,6 +112,7 @@ typedef enum {
 } KeyKind;
 
 typedef struct { KeyKind k; int ch; } Key;
+
 
 static int read_byte(int timeout_ms) {
     struct pollfd p = { STDIN_FILENO, POLLIN, 0 };
@@ -160,6 +161,7 @@ static Key read_key(void) {
 
 /* ── Line layout helpers ───────────────────────────────── */
 
+/* Number keys 1..4 map to screens in tab order. */
 static int g_row;   /* lines emitted so far in the current frame */
 
 /* Emits one full-width line (clipped to the screen height; the last row
@@ -203,15 +205,30 @@ static void fmt_dur(long s, char *out, size_t sz) {
     else snprintf(out, sz, "%lds", s);
 }
 
-typedef enum { SCR_CONFIG, SCR_INSIGHTS, SCR_ABOUT } TuiScreen;
+typedef enum { SCR_CONFIG, SCR_INSIGHTS, SCR_TEST, SCR_ABOUT } TuiScreen;
+#define N_SCREENS 4
+
+static TuiScreen key_screen(int ch) { return (TuiScreen)(ch - '1'); }
+
+/* Below this the layouts can't say anything useful; show a hint instead. */
+static int tiny(Buf *b) {
+    if (g_cols >= 32 && g_rows >= 8) return 0;
+    bput(b, "\033[H\033[J", 6);
+    bprintf(b, "Terminal too small\r\n(need 32x8, have %dx%d)\r\nq quits", g_cols, g_rows);
+    return 1;
+}
 
 static void header(Buf *b, TuiScreen cur) {
-    static const char *names[] = { "1 Settings", "2 Insights", "3 About" };
+    static const char *full[]  = { "1 Settings", "2 Insights", "3 Test", "4 About" };
+    static const char *small[] = { "1", "2", "3", "4" };
+    int compact = g_cols < 52;
     Buf t = {0};
-    bprintf(&t, " %sTimerC%s   ", C_ACC, C_RESET);
-    for (int i = 0; i < 3; i++) {
-        if (i == (int)cur) bprintf(&t, "%s %s %s ", C_REV, names[i], C_RESET);
-        else               bprintf(&t, "%s %s %s ", C_DIM, names[i], C_RESET);
+    if (!compact) bprintf(&t, " %sTimerC%s   ", C_ACC, C_RESET);
+    else bprintf(&t, " ");
+    for (int i = 0; i < N_SCREENS; i++) {
+        const char *nm = compact ? small[i] : full[i];
+        if (i == (int)cur) bprintf(&t, "%s %s %s ", C_REV, nm, C_RESET);
+        else               bprintf(&t, "%s %s %s ", C_DIM, nm, C_RESET);
     }
     ln(b, "%s", t.p);
     free(t.p);
@@ -297,6 +314,18 @@ static void cfg_apply(int idx, double v) {
     config_save();
 }
 
+static size_t u8len(const char *s) {
+    size_t c = 0;
+    for (; *s; s++) if (((unsigned char)*s & 0xC0) != 0x80) c++;
+    return c;
+}
+
+/* Settings rows that fit: header(2) + tabs + gap, then rule + hint + status. */
+static int cfg_avail(void) {
+    int a = g_rows - 8;
+    return a < 1 ? 1 : a;
+}
+
 static void cfg_draw(Buf *b, int cat, int sel, int scroll, const char *msg,
                      const char *edit_buf, int editing, char cats[][24], int ncats) {
     header(b, SCR_CONFIG);
@@ -312,9 +341,11 @@ static void cfg_draw(Buf *b, int cat, int sel, int scroll, const char *msg,
     ln(b, "%s", "");
 
     int n = cfg_count_in_cat(cats[cat]);
-    int avail = g_rows - g_row - 4;
-    if (avail < 3) avail = 3;
-    int bar_w = g_cols >= 90 ? 24 : g_cols >= 70 ? 14 : 0;
+    int avail = cfg_avail();
+    int lw = g_cols >= 60 ? 28 : g_cols >= 44 ? 22 : g_cols - 14;
+    if (lw < 8) lw = 8;
+    int bar_w = g_cols >= 100 ? 24 : g_cols >= 84 ? 14 : 0;
+    int show_def = g_cols >= 64;
     for (int r = scroll; r < n && r < scroll + avail; r++) {
         int idx = cfg_nth_in_cat(cats[cat], r);
         const CfgField *f = &CFG_FIELDS[idx];
@@ -322,12 +353,12 @@ static void cfg_draw(Buf *b, int cat, int sel, int scroll, const char *msg,
         char val[32], def[32], label[40];
         cfg_value_str(f, v, val, sizeof(val));
         cfg_value_str(f, d, def, sizeof(def));
-        fit(label, sizeof(label), f->label, 28);
+        fit(label, sizeof(label), f->label, lw);
 
         Buf row = {0};
         int selected = (r == sel);
-        bprintf(&row, " %s%s %-28s %10s%s ", selected ? C_ACC : "", selected ? "▸" : " ",
-                label, val, C_RESET);
+        bprintf(&row, " %s%s %s%*s %10s%s ", selected ? C_ACC : "", selected ? "▸" : " ",
+                label, lw - (int)u8len(label), "", val, C_RESET);
         if (bar_w && f->type != CFG_F_BOOL) {
             double t = (v - f->min) / (f->max - f->min);
             if (t < 0) t = 0;
@@ -337,8 +368,8 @@ static void cfg_draw(Buf *b, int cat, int sel, int scroll, const char *msg,
             for (int i = 0; i < bar_w; i++) bput(&row, i < fill ? "█" : "░", 3);
             bprintf(&row, "%s ", C_RESET);
         }
-        if (v != d) bprintf(&row, "%s● default %s%s", C_YELLOW, def, C_RESET);
-        else        bprintf(&row, "%sdefault%s", C_DIM, C_RESET);
+        if (v != d) bprintf(&row, show_def ? "%s● default %s%s" : "%s●%.0s%s", C_YELLOW, def, C_RESET);
+        else if (show_def) bprintf(&row, "%sdefault%s", C_DIM, C_RESET);
         ln(b, "%s", row.p);
         free(row.p);
     }
@@ -353,8 +384,9 @@ static void cfg_draw(Buf *b, int cat, int sel, int scroll, const char *msg,
         cfg_value_str(f, f->max, hi, sizeof(hi));
         ln(b, " %sNew value%s (%s … %s): %s%s█", C_ACC, C_RESET, lo, hi, C_BOLD, edit_buf);
     } else {
-        ln(b, " %s←/→ adjust   ↑/↓ select   Tab category   Enter type value   r reset   R reset all   q quit%s",
-           C_DIM, C_RESET);
+        ln(b, g_cols >= 84 ? " %s←/→ adjust   ↑/↓ select   Tab category   Enter type value   r reset   R reset all   q quit%s"
+            : g_cols >= 52 ? " %s←/→ adjust  ↑/↓ select  Tab cat  Enter edit  r reset  q quit%s"
+            : " %s←→ ↑↓ Tab Enter r q%s", C_DIM, C_RESET);
     }
     status_line(b, msg && msg[0] ? msg : "Changes are saved immediately and apply to the next timer you start.");
 }
@@ -371,14 +403,14 @@ static void screen_config(TuiScreen *next) {
         int n = cfg_count_in_cat(cats[cat]);
         if (sel >= n) sel = n - 1;
         if (sel < 0) sel = 0;
-        int avail = g_rows - 2 - 2 - 2 - 4; if (avail < 3) avail = 3;
+        int avail = cfg_avail();
         if (sel < scroll) scroll = sel;
         if (sel >= scroll + avail) scroll = sel - avail + 1;
 
         Buf b = {0};
         bput(&b, "\033[H", 3);
         g_row = 0;
-        cfg_draw(&b, cat, sel, scroll, msg, edit, editing, cats, ncats);
+        if (!tiny(&b)) cfg_draw(&b, cat, sel, scroll, msg, edit, editing, cats, ncats);
         flush_frame(&b);
         free(b.p);
 
@@ -441,7 +473,7 @@ static void screen_config(TuiScreen *next) {
                 config_normalize(); config_save();
                 snprintf(msg, sizeof(msg), "All settings reset to defaults");
             }
-            else if (k.ch >= '1' && k.ch <= '3') { *next = (TuiScreen)(k.ch - '1'); if (*next != SCR_CONFIG) return; }
+            else if (k.ch >= '1' && k.ch <= '4') { *next = key_screen(k.ch); if (*next != SCR_CONFIG) return; }
             break;
         default: break;
         }
@@ -481,12 +513,14 @@ static void ins_draw(Buf *b, int ev_scroll) {
 
     /* 14-day sparkline */
     static const char *bars[] = { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
+    int nd = (g_cols - 16) / 3; if (nd > INS_CHART_DAYS) nd = INS_CHART_DAYS; if (nd < 3) nd = 3;
+    int d0 = INS_CHART_DAYS - nd;
     int mx = 1;
-    for (int i = 0; i < INS_CHART_DAYS; i++) if (s->day_counts[i] > mx) mx = s->day_counts[i];
+    for (int i = d0; i < INS_CHART_DAYS; i++) if (s->day_counts[i] > mx) mx = s->day_counts[i];
     Buf spark = {0}, lab = {0};
-    bprintf(&spark, " %sLast %d days%s  ", C_BOLD, INS_CHART_DAYS, C_RESET);
+    bprintf(&spark, " %sLast %d days%s  ", C_BOLD, nd, C_RESET);
     bprintf(&lab, "              ");
-    for (int i = 0; i < INS_CHART_DAYS; i++) {
+    for (int i = d0; i < INS_CHART_DAYS; i++) {
         int c = s->day_counts[i];
         int lvl = c == 0 ? -1 : (c * 7) / mx;
         if (lvl < 0) bprintf(&spark, "%s·%s  ", C_DIM, C_RESET);
@@ -566,7 +600,7 @@ static void screen_insights(TuiScreen *next) {
         Buf b = {0};
         bput(&b, "\033[H", 3);
         g_row = 0;
-        ins_draw(&b, ev_scroll);
+        if (!tiny(&b)) ins_draw(&b, ev_scroll);
         while (g_row < g_rows - 1) ln(&b, "%s", "");
         status_line(&b, msg[0] ? msg : "←/→ day   t today   ↑/↓ session   PgUp/PgDn events   r reload   q quit");
         flush_frame(&b);
@@ -596,7 +630,7 @@ static void screen_insights(TuiScreen *next) {
                 db_insights_load_events(a, a->ins_sessions[a->ins_sel].id); }
             else if (k.ch == 'k' && a->ins_sel > 0) { a->ins_sel--; ev_scroll = 0;
                 db_insights_load_events(a, a->ins_sessions[a->ins_sel].id); }
-            else if (k.ch >= '1' && k.ch <= '3') { *next = (TuiScreen)(k.ch - '1'); if (*next != SCR_INSIGHTS) goto done; }
+            else if (k.ch >= '1' && k.ch <= '4') { *next = key_screen(k.ch); if (*next != SCR_INSIGHTS) goto done; }
             break;
         default: break;
         }
@@ -662,15 +696,63 @@ static void about_print_plain(void) {
     printf("\nVersion %s · data in %s\n", TIMERC_VERSION, dir);
 }
 
-static void screen_about(TuiScreen *next) {
-    int scroll = 0, total = 0;
-    while (ABOUT[total]) total++;
-    total += 3;
+/* Word-wraps ABOUT to `width` columns into rows[]; continuation lines are
+ * indented. Section titles are flagged so they can be styled. */
+typedef struct { char t[512]; int title; } AboutRow;
+static AboutRow g_arow[256];
 
+static int about_wrap(int width) {
+    int n = 0;
+    char dir[MAX_PATH_LEN];
+    get_config_dir(dir, sizeof(dir));
+    char tail[3][512];
+    snprintf(tail[0], sizeof(tail[0]), "%s", "");
+    snprintf(tail[1], sizeof(tail[1]), "Version %s", TIMERC_VERSION);
+    snprintf(tail[2], sizeof(tail[2]), "Data: %.400s", dir);
+    for (int i = 0; ABOUT[i]; i++) {
+        const char *l = ABOUT[i];
+        int is_title = 0;
+        if (l[0] == '#') { is_title = 1; l += 2; }
+        if (width < 8) width = 8;
+        const char *p = l;
+        int first = 1;
+        do {
+            if (n >= 255) return n;
+            int w = width - (first ? 0 : 4);
+            /* take up to w columns, breaking at the last space */
+            const char *q = p; int cols = 0; const char *brk = NULL;
+            while (*q && cols < w) {
+                if (*q == ' ') brk = q;
+                size_t len = 1; unsigned char c = (unsigned char)*q;
+                if (c >= 0xF0) len = 4; else if (c >= 0xE0) len = 3; else if (c >= 0xC0) len = 2;
+                q += len; cols++;
+            }
+            const char *end = q;
+            if (*q && brk && brk > p) end = brk;
+            size_t len = (size_t)(end - p);
+            if (len > sizeof(g_arow[n].t) - 1) len = sizeof(g_arow[n].t) - 1;
+            snprintf(g_arow[n].t, sizeof(g_arow[n].t), "%s%.*s", first ? "" : "    ", (int)len, p);
+            g_arow[n].title = is_title;
+            n++;
+            p = end;
+            while (*p == ' ') p++;
+            first = 0;
+        } while (*p);
+    }
+    for (int i = 0; i < 3 && n < 256; i++, n++) {
+        snprintf(g_arow[n].t, sizeof(g_arow[n].t), "%.500s", tail[i]);
+        g_arow[n].title = -1;   /* dim footer */
+    }
+    return n;
+}
+
+static void screen_about(TuiScreen *next) {
+    int scroll = 0;
     for (;;) {
         if (g_quit) { *next = (TuiScreen)-1; return; }
         if (g_resized) { g_resized = 0; term_size(); }
-        int view = g_rows - 1 - 2;
+        int total = about_wrap(g_cols - 4);
+        int view = g_rows - 1 - 2; if (view < 1) view = 1;
         int maxs = total - view; if (maxs < 0) maxs = 0;
         if (scroll > maxs) scroll = maxs;
         if (scroll < 0) scroll = 0;
@@ -678,20 +760,17 @@ static void screen_about(TuiScreen *next) {
         Buf b = {0};
         bput(&b, "\033[H", 3);
         g_row = 0;
-        header(&b, SCR_ABOUT);
-        char dir[MAX_PATH_LEN]; get_config_dir(dir, sizeof(dir));
-        for (int i = scroll; i < total && i < scroll + view; i++) {
-            if (i < (int)(total - 3)) {
-                const char *l = ABOUT[i];
-                char clip[512];
-                if (l[0] == '#') { fit(clip, sizeof(clip), l + 2, g_cols - 4); ln(&b, " %s%s%s%s", C_BOLD, C_ACC, clip, C_RESET); }
-                else { fit(clip, sizeof(clip), l, g_cols - 4); ln(&b, "  %s", clip); }
-            } else if (i == total - 3) ln(&b, "%s", "");
-            else if (i == total - 2) ln(&b, "  %sVersion %s%s", C_DIM, TIMERC_VERSION, C_RESET);
-            else ln(&b, "  %sData: %s%s", C_DIM, dir, C_RESET);
+        if (!tiny(&b)) {
+            header(&b, SCR_ABOUT);
+            for (int i = scroll; i < total && i < scroll + view; i++) {
+                AboutRow *r = &g_arow[i];
+                if (r->title == 1) ln(&b, " %s%s%s%s", C_BOLD, C_ACC, r->t, C_RESET);
+                else if (r->title == -1) ln(&b, "  %s%s%s", C_DIM, r->t, C_RESET);
+                else ln(&b, "  %s", r->t);
+            }
+            while (g_row < g_rows - 1) ln(&b, "%s", "");
+            status_line(&b, "↑/↓ scroll   1-4 switch screen   q quit");
         }
-        while (g_row < g_rows - 1) ln(&b, "%s", "");
-        status_line(&b, "↑/↓ scroll   1/2 switch screen   q quit");
         flush_frame(&b);
         free(b.p);
 
@@ -709,11 +788,210 @@ static void screen_about(TuiScreen *next) {
             if (k.ch == 'q') { *next = (TuiScreen)-1; return; }
             if (k.ch == 'k') scroll--;
             else if (k.ch == 'j') scroll++;
-            else if (k.ch >= '1' && k.ch <= '3') { *next = (TuiScreen)(k.ch - '1'); if (*next != SCR_ABOUT) return; }
+            else if (k.ch >= '1' && k.ch <= '4') { *next = key_screen(k.ch); if (*next != SCR_ABOUT) return; }
             break;
         default: break;
         }
     }
+}
+
+/* ══ Test ══════════════════════════════════════════════════
+ * Auditions things without starting a real timer. Each test re-runs this
+ * binary as a child (its own process group) with output captured, so a
+ * keypress can always stop it cleanly. */
+
+typedef struct { const char *label, *desc; const char *argv[4]; int needs_display; int ask_duration; } TestItem;
+
+static const TestItem TESTS[] = {
+    { "Alarm sound",           "Plays the alarm at its start volume (30 s)",          { "test", "alarm", NULL },     0, 0 },
+    { "Sleep: preparing",      "Rain ambience that fades in (30 s)",                  { "test", "preparing", NULL }, 0, 0 },
+    { "Sleep: sleeping",       "Low drone loop (30 s)",                               { "test", "sleeping", NULL },  0, 0 },
+    { "Sleep: waking",         "Gentle chime and pad (30 s)",                         { "test", "waking", NULL },    0, 0 },
+    { "Sleep: all phases",     "Preparing, sleeping, then waking in a row",           { "test", "all", NULL },       0, 0 },
+    { "Sleep-mode plan",       "Show the phase plan for a duration you type",         { "/testsleep", NULL, NULL },  0, 1 },
+    { "Fullscreen alert",      "Runs a 2 s timer, then shows the alert (needs X11)",  { "2s", "Test alert", NULL },  1, 0 },
+};
+#define N_TESTS ((int)(sizeof(TESTS) / sizeof(TESTS[0])))
+
+typedef struct { pid_t pid; int fd; Buf out; int running; int status; } TestRun;
+
+static void test_stop(TestRun *r) {
+    if (r->running) {
+        kill(-r->pid, SIGTERM);
+        usleep(100000);
+        kill(-r->pid, SIGKILL);
+        waitpid(r->pid, &r->status, 0);
+        r->running = 0;
+    }
+    if (r->fd >= 0) { close(r->fd); r->fd = -1; }
+}
+
+static int test_start(TestRun *r, const TestItem *t, const char *arg) {
+    int fds[2];
+    if (pipe(fds) < 0) return 0;
+    char exe[MAX_PATH_LEN];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) { close(fds[0]); close(fds[1]); return 0; }
+    exe[n] = '\0';
+    pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return 0; }
+    if (pid == 0) {
+        setsid();
+        int dn = open("/dev/null", O_RDONLY);
+        if (dn >= 0) dup2(dn, STDIN_FILENO);
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        close(fds[0]); close(fds[1]);
+        const char *av[8]; int ac = 0;
+        av[ac++] = "timerc";
+        for (int i = 0; i < 4 && t->argv[i]; i++) av[ac++] = t->argv[i];
+        if (t->ask_duration) av[ac++] = arg;
+        av[ac] = NULL;
+        execv(exe, (char *const *)av);
+        _exit(127);
+    }
+    close(fds[1]);
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    free(r->out.p); memset(&r->out, 0, sizeof(r->out));
+    r->pid = pid; r->fd = fds[0]; r->running = 1; r->status = 0;
+    return 1;
+}
+
+static void test_pump(TestRun *r) {
+    if (r->fd >= 0) {
+        char tmp[2048]; ssize_t n;
+        while ((n = read(r->fd, tmp, sizeof(tmp))) > 0) {
+            if (r->out.n < 64 * 1024) bput(&r->out, tmp, (size_t)n);
+        }
+    }
+    if (r->running) {
+        int st;
+        if (waitpid(r->pid, &st, WNOHANG) == r->pid) { r->running = 0; r->status = st; }
+    }
+}
+
+static void test_draw(Buf *b, int sel, int editing, const char *edit, TestRun *run, int scroll, const char *msg) {
+    header(b, SCR_TEST);
+    int list_rows = N_TESTS;
+    int out_rows = g_rows - 1 - g_row - list_rows - 2;
+    int compact = out_rows < 4;           /* short terminal: hide the output pane while idle */
+    if (compact && !run->out.n && !run->running) { out_rows = 0; }
+    if (g_rows - g_row - 2 < list_rows) list_rows = g_rows - g_row - 2;
+    if (list_rows < 1) list_rows = 1;
+    int first = sel - list_rows + 1; if (first < 0) first = 0;
+    for (int i = first; i < N_TESTS && i < first + list_rows; i++) {
+        char lab[48], d[160];
+        fit(lab, sizeof(lab), TESTS[i].label, 24);
+        int room = g_cols - 32;
+        fit(d, sizeof(d), TESTS[i].desc, room > 0 ? room : 0);
+        int on = (i == sel);
+        ln(b, " %s%s %-24s%s %s%s%s", on ? C_ACC : "", on ? "▸" : " ", lab, C_RESET, C_DIM, d, C_RESET);
+    }
+    rule(b);
+    if (editing) {
+        ln(b, " %sDuration%s (e.g. 8h, u6:30): %s%s█", C_ACC, C_RESET, C_BOLD, edit);
+    } else if (run->running) {
+        ln(b, " %s● running%s — press any key to stop", C_GREEN, C_RESET);
+    } else if (run->out.n || run->pid) {
+        int ok = WIFEXITED(run->status) && WEXITSTATUS(run->status) == 0;
+        ln(b, " %s%s%s", ok ? C_GREEN : C_YELLOW, ok ? "finished" : "stopped / failed", C_RESET);
+    } else ln(b, " %sPick a test and press Enter%s", C_DIM, C_RESET);
+
+    /* Output pane: split captured text into lines, show the tail (or scrolled view). */
+    int rows = g_rows - 1 - g_row; if (rows < 0) rows = 0;
+    char *lines[512]; int nl = 0;
+    if (run->out.p) {
+        char *p = run->out.p;
+        while (*p && nl < 511) {
+            lines[nl++] = p;
+            char *e = strchr(p, '\n');
+            if (!e) break;
+            *e = '\0';
+            p = e + 1;
+        }
+    }
+    int maxs = nl > rows ? nl - rows : 0;
+    int start = run->running ? maxs : (scroll > maxs ? maxs : scroll);
+    for (int i = start; i < nl && i < start + rows; i++) {
+        char clip[512], *c = lines[i];
+        for (char *q = c; *q; q++) if (*q == '\r' || *q == '\033') *q = ' ';
+        fit(clip, sizeof(clip), c, g_cols - 3);
+        ln(b, "  %s", clip);
+    }
+    (void)out_rows;
+    while (g_row < g_rows - 1) ln(b, "%s", "");
+    status_line(b, msg && msg[0] ? msg : "↑/↓ select   Enter run   PgUp/PgDn output   1-4 switch screen   q quit");
+}
+
+static void screen_test(TuiScreen *next) {
+    int sel = 0, editing = 0, scroll = 0;
+    char edit[32] = "", msg[128] = "";
+    TestRun run; memset(&run, 0, sizeof(run)); run.fd = -1;
+
+    for (;;) {
+        if (g_quit) { test_stop(&run); *next = (TuiScreen)-1; goto out; }
+        if (g_resized) { g_resized = 0; term_size(); }
+        test_pump(&run);
+
+        Buf b = {0};
+        bput(&b, "\033[H", 3);
+        g_row = 0;
+        if (!tiny(&b)) test_draw(&b, sel, editing, edit, &run, scroll, msg);
+        flush_frame(&b);
+        free(b.p);
+        /* test_draw splits the output in place; undo so appends stay valid. */
+        if (run.out.p) for (size_t i = 0; i < run.out.n; i++) if (run.out.p[i] == '\0') run.out.p[i] = '\n';
+
+        struct pollfd pf[2] = { { STDIN_FILENO, POLLIN, 0 }, { run.fd, POLLIN, 0 } };
+        int ready = poll(pf, run.fd >= 0 ? 2 : 1, 200);
+        if (ready <= 0 || !(pf[0].revents & POLLIN)) continue;
+        Key k = read_key();
+        if (k.k == K_NONE) continue;
+        if (k.k == K_QUIT) { test_stop(&run); *next = (TuiScreen)-1; goto out; }
+        msg[0] = '\0';
+
+        if (run.running) { test_stop(&run); snprintf(msg, sizeof(msg), "Stopped"); continue; }
+
+        if (editing) {
+            size_t len = strlen(edit);
+            if (k.k == K_ESC) editing = 0;
+            else if (k.k == K_BACKSPACE) { if (len) edit[len - 1] = '\0'; }
+            else if (k.k == K_CHAR && len < sizeof(edit) - 1) { edit[len] = (char)k.ch; edit[len + 1] = '\0'; }
+            else if (k.k == K_ENTER) {
+                editing = 0;
+                if (!edit[0]) snprintf(edit, sizeof(edit), "8h");
+                if (!test_start(&run, &TESTS[sel], edit)) snprintf(msg, sizeof(msg), "Could not start the test");
+                scroll = 0;
+            }
+            continue;
+        }
+
+        switch (k.k) {
+        case K_UP: if (sel > 0) sel--; break;
+        case K_DOWN: if (sel < N_TESTS - 1) sel++; break;
+        case K_PGUP: scroll -= 5; if (scroll < 0) scroll = 0; break;
+        case K_PGDN: scroll += 5; break;
+        case K_ESC: *next = (TuiScreen)-1; goto out;
+        case K_ENTER:
+            if (TESTS[sel].needs_display && !getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) {
+                snprintf(msg, sizeof(msg), "No graphical display found (DISPLAY is not set)");
+                break;
+            }
+            if (TESTS[sel].ask_duration) { editing = 1; snprintf(edit, sizeof(edit), "8h"); }
+            else { test_start(&run, &TESTS[sel], NULL); scroll = 0; }
+            break;
+        case K_CHAR:
+            if (k.ch == 'q') { *next = (TuiScreen)-1; goto out; }
+            if (k.ch == 'k' && sel > 0) sel--;
+            else if (k.ch == 'j' && sel < N_TESTS - 1) sel++;
+            else if (k.ch >= '1' && k.ch <= '4') { *next = key_screen(k.ch); if (*next != SCR_TEST) goto out; }
+            break;
+        default: break;
+        }
+    }
+out:
+    test_stop(&run);
+    free(run.out.p);
 }
 
 /* ══ Plain-text (non-interactive) output ═══════════════════ */
@@ -826,6 +1104,7 @@ int cli_main(const char *cmd, int argc, char **argv) {
         TuiScreen next = (TuiScreen)-1;
         if (scr == SCR_CONFIG) screen_config(&next);
         else if (scr == SCR_INSIGHTS) screen_insights(&next);
+        else if (scr == SCR_TEST) screen_test(&next);
         else screen_about(&next);
         scr = next;
     }

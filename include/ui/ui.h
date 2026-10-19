@@ -24,10 +24,6 @@ void draw_config_panel(App *app);
 void cfg_redraw_after_input(App *app);
 
 
-/* Fullscreen alert volume slider — item 5 */
-int  alert_vol_handle_click(App *app, int screen_idx, int mx, int my);
-int  alert_vol_handle_motion(App *app, int screen_idx, int mx, int my);
-void alert_vol_handle_release(App *app);
 
 void draw_timer(App *app);
 void draw_alert(App *app);

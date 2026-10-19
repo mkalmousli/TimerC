@@ -13,23 +13,6 @@ static void ensure_alert_screen_buf(App *app, AlertScreen *s) {
     s->buf_xft = make_xft_draw(app, s->buf);
 }
 
-/* Whichever volume is actually "live" right now during the alert: the
- * sleep-mode waking phase's volume if this timer was sleep-mode, else
- * the alarm's ramped-to ceiling. */
-static double *alert_active_volume_field(App *app) {
-    return app->sleep_mode ? &g_config.sleep_volume_waking_percent
-                            : &g_config.alarm_volume_max_percent;
-}
-
-
-static void alert_vol_rect(AlertScreen *s, int *x, int *y, int *w, int *h) {
-    *w = 320; if (*w > s->w - 80) *w = s->w - 80;
-    *h = 10;
-    *x = (s->w - *w) / 2;
-    *y = s->h*2/3 + 52 + 40;
-}
-
-
 static void draw_alert_screen(App *app, AlertScreen *s,
                                double elapsed, unsigned long bg_rgb,
                                double brightness) {
@@ -63,65 +46,8 @@ static void draw_alert_screen(App *app, AlertScreen *s,
                                          W/2, by+(bh-f->ascent-f->descent)/2+f->ascent,
                                          "Dismiss  (ESC / click)");
     }
-    /* Volume slider — bound to whichever volume is currently active
-     * (alarm ceiling, or sleep-mode waking volume), reusing the same
-     * slider look as the Settings overlay. Dragging it calls
-     * set_system_volume() live for immediate audible feedback. */
-    {
-        int sx, sy, sw, sh; alert_vol_rect(s, &sx, &sy, &sw, &sh);
-        double pct = *alert_active_volume_field(app);
-        char lbl[32]; snprintf(lbl, sizeof(lbl), "Volume  %d%%", (int)pct);
-        XftFont *f = get_font(app, 11, 0);
-        if (f) xft_draw_string_centered(app, draw, f, text_col, W/2, sy - 12, lbl);
-        fill_rect(app, buf, 0x000000UL, sx, sy, sw, sh);
-        draw_rect_outline(app, buf, text_col, sx, sy, sw, sh);
-        int fillw = (int)(sw * (pct / 100.0));
-        if (fillw > 0) fill_rect(app, buf, text_col, sx, sy, fillw, sh);
-    }
     XCopyArea(app->dpy, buf, s->win, app->gc, 0, 0, W, H, 0, 0);
     (void)elapsed;
-}
-
-
-int alert_vol_handle_click(App *app, int screen_idx, int mx, int my) {
-    if (screen_idx < 0 || screen_idx >= app->n_alert_screens) return 0;
-    AlertScreen *s = &app->alert_screens[screen_idx];
-    int sx, sy, sw, sh; alert_vol_rect(s, &sx, &sy, &sw, &sh);
-    if (mx < sx-8 || mx >= sx+sw+8 || my < sy-16 || my >= sy+sh+16) return 0;
-
-    double frac = sw > 0 ? (double)(mx - sx) / (double)sw : 0.0;
-    if (frac < 0) frac = 0;
-            if (frac > 1) frac = 1;
-    double pct = frac * 100.0;
-    *alert_active_volume_field(app) = pct;
-    config_save();
-    set_system_volume((int)pct);
-    app->alert_vol_dragging = 1;
-    draw_alert(app);
-    return 1;
-}
-
-
-int alert_vol_handle_motion(App *app, int screen_idx, int mx, int my) {
-    if (!app->alert_vol_dragging) return 0;
-    if (screen_idx < 0 || screen_idx >= app->n_alert_screens) return 0;
-    AlertScreen *s = &app->alert_screens[screen_idx];
-    int sx, sy, sw, sh; alert_vol_rect(s, &sx, &sy, &sw, &sh);
-    (void)sy; (void)sh;
-    double frac = sw > 0 ? (double)(mx - sx) / (double)sw : 0.0;
-    if (frac < 0) frac = 0;
-            if (frac > 1) frac = 1;
-    double pct = frac * 100.0;
-    *alert_active_volume_field(app) = pct;
-    config_save();
-    set_system_volume((int)pct);
-    draw_alert(app);
-    return 1;
-}
-
-
-void alert_vol_handle_release(App *app) {
-    app->alert_vol_dragging = 0;
 }
 
 

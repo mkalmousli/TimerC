@@ -1,4 +1,4 @@
-.TH TIMERC 1 "2026" "timerc" "User Commands"
+.TH TIMERC 1 "2026" "timerc 1.1" "User Commands"
 .SH NAME
 timerc, timerc-bg \- native X11 countdown timer
 .SH SYNOPSIS
@@ -7,52 +7,166 @@ timerc, timerc-bg \- native X11 countdown timer
 .br
 .B timerc-bg
 [\fItime\fR] [\fItask\fR] [\fIoptions\fR]
+.br
+.B timerc
+.RB { config | insights | about }
+[\fIargs\fR]
+.br
+.B timerc test
+.RB { alarm | preparing | sleeping | waking | all }
+.br
+.B timerc /testsleep
+.I time
 .SH DESCRIPTION
 .B timerc
-runs in the foreground and blocks until the timer finishes (usable in scripts:
-\fBtimerc 5m && notify-send done\fR).
+is a small countdown timer written in C for X11.
+The graphical window does exactly three things: it takes your input, shows the
+running timer, and rings the alarm. Everything else (settings, statistics,
+help, audio tests) is in the terminal; see
+.BR timerc-config (1),
+.BR timerc-insights (1)
+and
+.B TERMINAL UIS
+below.
+.PP
+.B timerc
+runs in the foreground and blocks until the timer ends, so it is usable in
+scripts:
+.B timerc 5m && notify-send done
+.PP
 .B timerc-bg
-is the same program detached from the terminal.
-With no arguments an interactive setup screen opens.
+is the same program (it is selected by the name it is run under) detached from
+the terminal like a daemon; see
+.BR timerc-bg (1).
+.PP
+With no time argument the setup window opens.
 .SH TIME FORMATS
-25m, 1h30m, 45 (minutes), 30:00, 1:30:00, u15:30 (until clock time).
+.TP
+.B 25m, 1h30m, 90s, 500ms
+Durations. A bare number is minutes.
+.TP
+.B 30:00, 1:30:00
+Clock-style durations (mm:ss, h:mm:ss).
+.TP
+.B u15:30
+Until the clock reads 15:30 (today, or tomorrow if already past).
+.TP
+.B u:30
+Until minute 30 of this (or the next) hour.
+.PP
+Anything after the time is the task name shown on the timer and in statistics.
 .SH SWITCHES
-Prefix letters before the time: d shutdown, a alert, f/r fullscreen, p pausable,
-l lock keyboard/mouse, / sleep mode.
+Single letters written before the time, with or without a space, and combinable
+(\fBfp25m\fR):
+.TP
+.B d
+Shut the machine down when the timer ends.
+.TP
+.B a
+Fullscreen alert when the timer ends (the default mode).
+.TP
+.B f, r
+Start fullscreen.
+.TP
+.B p
+Pausable: Space or left click pauses and resumes.
+.TP
+.B l
+Lock keyboard and mouse until the timer ends (needs \fBtimerc-lock-helper\fR).
+.TP
+.B /
+Sleep mode: ambient audio that fades in, sustains, then wakes you gently.
 .SH OPTIONS
 .TP
 .BI \-m " alert|shutdown"
 Mode when the timer ends.
 .TP
-.B \-p, \-\-pausable
+.BR \-p ", " \-\-pausable
 Allow pause/resume.
 .TP
-.B \-f, \-\-fullscreen
+.BR \-f ", " \-\-fullscreen
 Start fullscreen.
 .TP
-.B \-l, \-\-lock
+.BR \-l ", " \-\-lock
 Disconnect USB keyboard/mouse (needs timerc-lock-helper).
 .TP
 .BI \-\-theme " NAME"
-Select a theme.
+Select a theme by name.
 .TP
-.B \-V, \-\-version
-Print version.
+.B \-\-gl
+Use the OpenGL renderer when built with it.
 .TP
-.B \-h, \-\-help
-Print help.
+.BR \-V ", " \-\-version
+Print the version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print a short help text and exit.
+.SH WINDOW CONTROLS
+.TP
+.B Setup window
+Enter starts, Tab (or Ctrl+T) rolls a new theme, Ctrl+A moves the cursor to the
+end, Esc quits.
+.TP
+.B Running timer
+Space or left click: pause/resume (with \fBp\fR). Right click: toggle mini and
+fullscreen. Middle click: stop. Drag the mini window to move it, drag its
+corner to resize.
+.TP
+.B Alert
+Esc or any click dismisses it.
 .SH TERMINAL UIS
-The window only handles input, the timer and the alarm. Everything else is in the terminal:
 .TP
 .B timerc config
-Interactive settings. Also \fBconfig list\fR, \fBconfig get\fR \fIKEY\fR, \fBconfig set\fR \fIKEY VALUE\fR, \fBconfig reset\fR [\fIKEY\fR], \fBconfig path\fR.
+Interactive settings and audio tests; also scriptable. See
+.BR timerc-config (1).
 .TP
 .B timerc insights
-Session statistics and event log (plain text when not on a terminal).
+Session statistics and event log. See
+.BR timerc-insights (1).
 .TP
 .B timerc about
-Timer syntax, keys and credits.
+Syntax, keys and credits (plain text when not on a terminal).
+.TP
+.BI "timerc test " "alarm|preparing|sleeping|waking|all"
+Plays the procedurally generated audio at the configured volume (30 s per phase).
+.TP
+.BI "timerc /testsleep " time
+Prints the sleep-mode phase plan for that duration without playing anything.
+.SH ENVIRONMENT
+.TP
+.B DISPLAY, XAUTHORITY
+X server to use. When \fBDISPLAY\fR is unset (for example over SSH),
+.B timerc
+looks for a running graphical session of the same user and adopts its values.
+.TP
+.B NO_COLOR
+Disables colour in the terminal UIs.
 .SH FILES
-~/.config/timerc/ (config.conf, data.db, timer.log)
+.TP
+.I ~/.config/timerc/config.conf
+Settings, one \fBkey = value\fR per line (edit with \fBtimerc config\fR).
+.TP
+.I ~/.config/timerc/data.db
+SQLite database of sessions and events.
+.TP
+.I ~/.config/timerc/timer.log
+Log file.
+.SH EXIT STATUS
+0 on success (the timer ran to its end or was dismissed), non-zero on invalid
+arguments or when the X display cannot be opened.
+.SH EXAMPLES
+.nf
+timerc 25m write report
+timerc-bg u16:30 meeting
+timerc pf45m deep work
+timerc /8h
+timerc config set alarm_volume_max_percent 60
+.fi
+.SH SEE ALSO
+.BR timerc-bg (1),
+.BR timerc-config (1),
+.BR timerc-insights (1)
+.PP
+https://github.com/mkalmousli/timerc
 .SH AUTHOR
 Mohamad Almousli <https://al-mo.de>
