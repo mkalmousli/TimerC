@@ -20,9 +20,9 @@ No GTK, no Qt, no Python, no Electron. Just Xlib, Xft and SQLite.
 
 ## Demo
 
-<a href="https://github.com/mkalmousli/timerc/raw/main/docs/assets/demo.mp4"><img src="docs/assets/demo-poster.jpg" width="720" alt="▶ Watch the TimerC demo video"></a>
+<a href="https://al-mo.de/tools/timerc/#demo"><img src="docs/assets/demo.gif" width="640" alt="TimerC demo: setup, help, mini timer, fullscreen"></a>
 
-▶ [Watch the demo video](https://github.com/mkalmousli/timerc/raw/main/docs/assets/demo.mp4)
+▶ [Watch the full-quality video on the website](https://al-mo.de/tools/timerc/#demo)
 
 ## Install (one command)
 
