@@ -1,15 +1,15 @@
 CC      = gcc
-VERSION ?= 1.0.0
+VERSION ?= 1.1.0
 TARGET  = timerc
 
 CORE_SRCS     = src/core/app.c src/core/config.c src/core/parse.c src/core/db.c
 PLATFORM_SRCS = src/platform/linux/lock.c src/platform/linux/linux_audio.c \
                 src/platform/linux/linux_fs.c
-UI_SRCS       = src/ui/draw_common.c src/ui/draw_timer.c src/ui/draw_settings.c \
-                src/ui/draw_insights.c src/ui/draw_alert.c src/ui/draw_help.c
+UI_SRCS       = src/ui/draw_common.c src/ui/draw_timer.c src/ui/draw_alert.c
+CLI_SRCS      = src/cli/tui.c
 AUDIO_SRCS    = src/audio/synth.c
 
-SRCS = $(CORE_SRCS) $(PLATFORM_SRCS) $(UI_SRCS) $(AUDIO_SRCS)
+SRCS = $(CORE_SRCS) $(PLATFORM_SRCS) $(UI_SRCS) $(AUDIO_SRCS) $(CLI_SRCS)
 
 # Tiny setuid-root helper (lockhelper.c) so `timerc` itself never runs as
 # root — only it can flip a USB device's sysfs 'authorized' attribute,

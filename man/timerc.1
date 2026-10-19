@@ -41,6 +41,17 @@ Print version.
 .TP
 .B \-h, \-\-help
 Print help.
+.SH TERMINAL UIS
+The window only handles input, the timer and the alarm. Everything else is in the terminal:
+.TP
+.B timerc config
+Interactive settings. Also \fBconfig list\fR, \fBconfig get\fR \fIKEY\fR, \fBconfig set\fR \fIKEY VALUE\fR, \fBconfig reset\fR [\fIKEY\fR], \fBconfig path\fR.
+.TP
+.B timerc insights
+Session statistics and event log (plain text when not on a terminal).
+.TP
+.B timerc about
+Timer syntax, keys and credits.
 .SH FILES
 ~/.config/timerc/ (config.conf, data.db, timer.log)
 .SH AUTHOR

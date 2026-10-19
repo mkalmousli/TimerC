@@ -312,66 +312,17 @@ static void cfg_draw_panel(App *app, Drawable buf, XftDraw *draw,
 }
 
 
-/* ── Footer buttons (setup screen) ─────────────────────────
- * Bottom-center row of small pill buttons offering the same three
- * overlays as their keyboard shortcuts (Ctrl+G/H/I), so they're
- * discoverable without knowing the shortcuts. */
-
-typedef struct { const char *label; char key; } FooterBtn;
-static const FooterBtn CFG_FOOTER_BTNS[3] = {
-    { "settings", 'g' },
-    { "about",    'h' },
-    { "stats",    'i' },
-};
-
-/* Computes the on-screen rect of each footer button into out[3]
- * as {x, y, w, h}. Shared by the draw and hit-test paths so they
- * can never drift out of sync. */
-static void cfg_footer_rects(App *app, int out[3][4]) {
-    const int btn_h = 28, gap = 10, pad_x = 14;
-    XftFont *f = get_font(app, 9, 1);
-    int widths[3], total = -gap;
-    for (int i = 0; i < 3; i++) {
-        widths[i] = (f ? text_width(app, f, CFG_FOOTER_BTNS[i].label) : 40) + pad_x * 2;
-        total += widths[i] + gap;
-    }
-    int x = (g_config.cfg_w - total) / 2;
-    int y = g_config.cfg_h - btn_h - 20;
-    for (int i = 0; i < 3; i++) {
-        out[i][0] = x; out[i][1] = y; out[i][2] = widths[i]; out[i][3] = btn_h;
-        x += widths[i] + gap;
-    }
-}
+/* ── Footer hint (setup screen) ────────────────────────────
+ * Settings, statistics and help live in the terminal. */
 
 static void cfg_draw_footer(App *app, Drawable buf, XftDraw *draw, const Theme *th) {
-    int rects[3][4];
-    cfg_footer_rects(app, rects);
     XftFont *f = get_font(app, 9, 1);
-    for (int i = 0; i < 3; i++) {
-        int x = rects[i][0], y = rects[i][1], w = rects[i][2], h = rects[i][3];
-        int hover = (app->cfg_footer_hover == i + 1);
-        fill_rect(app, buf, hover ? th->accent_soft : th->surface_soft, x, y, w, h);
-        draw_rect_outline(app, buf, th->border, x, y, w, h);
-        if (f) xft_draw_string_centered(app, draw, f, hover ? th->accent : th->text_muted,
-                                        x + w / 2, y + (h + f->ascent - f->descent) / 2,
-                                        CFG_FOOTER_BTNS[i].label);
-    }
+    if (!f) return;
+    (void)buf;
+    xft_draw_string_centered(app, draw, f, th->text_muted, g_config.cfg_w / 2,
+                             g_config.cfg_h - 22,
+                             "terminal:  timerc config  ·  timerc insights  ·  timerc about");
 }
-
-/* Returns 1-based footer button index at (mx,my), or 0 if none. */
-int cfg_footer_hit_test(App *app, int mx, int my) {
-    if (!app->cfg_win || app->settings_open || app->insights_open ||
-        app->help_open || app->sleep_preview_open) return 0;
-    int rects[3][4];
-    cfg_footer_rects(app, rects);
-    for (int i = 0; i < 3; i++) {
-        if (mx >= rects[i][0] && mx < rects[i][0] + rects[i][2] &&
-            my >= rects[i][1] && my < rects[i][1] + rects[i][3])
-            return i + 1;
-    }
-    return 0;
-}
-
 
 void draw_config_anim(App *app) {
     if (!app->cfg_win) return;
@@ -424,132 +375,8 @@ void draw_config_panel(App *app) {
     cfg_present_borders(app);
 }
 
-/* ── Sleep preview overlay ("/testsleep <time>" + Enter) ──── */
-
-static void sleep_preview_button_rect(int *bx, int *by, int *bw, int *bh) {
-    int W = g_config.cfg_w, H = g_config.cfg_h;
-    int pad = 24;
-    *bx = pad; *by = H - 64; *bw = W - 2*pad; *bh = 40;
-}
-
-
-int sleep_preview_handle_click(App *app, int mx, int my) {
-    if (!app->sleep_preview_open || !app->sleep_preview) return 0;
-    int bx, by, bw, bh;
-    sleep_preview_button_rect(&bx, &by, &bw, &bh);
-    if (mx < bx || mx >= bx + bw || my < by || my >= by + bh) return 0;
-
-    if (app->sleep_audio_active) {
-        app->sleep_audio_active = 0;
-        kill_all_audio(app);
-    } else {
-        play_sleep_audition(app, app->sleep_preview);
-    }
-    draw_sleep_preview(app);
-    return 1;
-}
-
-
-void draw_sleep_preview(App *app) {
-    if (!app->cfg_win) return;
-    ensure_cfg_buf(app);
-    const Theme *th = cfg_theme(app);
-    int W = g_config.cfg_w, H = g_config.cfg_h;
-    Drawable buf  = app->cfg_buf ? (Drawable)app->cfg_buf : (Drawable)app->cfg_win;
-    XftDraw *draw = app->cfg_buf ? app->cfg_buf_xft : app->cfg_xft;
-    if (!draw) return;
-
-    cfg_draw_cyber_bg(app, buf, th, 0, 0, W, H, monotonic_now());
-
-    XftFont *fh = get_font(app, 14, 1);
-    XftFont *fm = get_font(app, 10, 1);
-    XftFont *fs = get_font(app, 9, 0);
-
-    int pad = 24;
-    if (fh) xft_draw_string(app, draw, fh, th->accent, pad, pad + 14, "SLEEP PREVIEW");
-    if (fs) {
-        const char *hint = "Esc to close";
-        xft_draw_string(app, draw, fs, th->text_muted,
-                        W - pad - text_width(app, fs, hint), pad + 12, hint);
-    }
-
-    int y = pad + 42;
-    SleepPreviewData *d = app->sleep_preview;
-    if (!d) return;
-
-    if (fs) {
-        char line[300];
-        char dur[32]; format_time((int)d->total_seconds, dur, sizeof(dur));
-        snprintf(line, sizeof(line), "\"%s\"  —  %s total", app->sleep_preview_input, dur);
-        xft_draw_string(app, draw, fs, th->text_muted, pad, y, line);
-        y += 22;
-    }
-
-    struct { const char *title; const char *note; double span; double volume_pct;
-             const char *fallback; } phases[3] = {
-        { "1  PREPARING",  "plays fully if it fits",       d->intro_len,
-          g_config.sleep_volume_preparing_percent,
-          "generated: rain — filtered noise + droplets, fades in" },
-        { "2  SLEEPING",   "lowest priority — loops to fill / fades if cut",
-          d->sleep_end - d->intro_len > 0 ? d->sleep_end - d->intro_len : 0.0,
-          g_config.sleep_volume_sleeping_percent,
-          "generated: slow detuned-oscillator drone + LFO (looped)" },
-        { "3  WAKING",     "highest priority — always plays in full",
-          d->wake_len,
-          g_config.sleep_volume_waking_percent,
-          "generated: gentle rising chime over a soft pad (looped)" },
-    };
-
-    for (int p = 0; p < 3 && y < H - 90; p++) {
-        if (fm) { xft_draw_string(app, draw, fm, th->accent, pad, y, phases[p].title); y += 16; }
-        if (fs) {
-            xft_draw_string(app, draw, fs, th->text_muted, pad + 4, y, phases[p].note);
-            y += 16;
-            char span[64]; char sbuf[24]; format_time((int)phases[p].span, sbuf, sizeof(sbuf));
-            snprintf(span, sizeof(span), "~%s   system volume: %.0f%%", sbuf, phases[p].volume_pct);
-            xft_draw_string(app, draw, fs, th->text, pad + 4, y, span);
-            y += 18;
-            xft_draw_string(app, draw, fs, th->text_muted, pad + 8, y, phases[p].fallback);
-            y += 16;
-        }
-        y += 10;
-    }
-
-    int bx, by, bw, bh;
-    sleep_preview_button_rect(&bx, &by, &bw, &bh);
-    int playing = app->sleep_audio_active;
-    fill_rect(app, buf, playing ? th->danger : th->accent_soft, bx, by, bw, bh);
-    draw_rect_outline(app, buf, playing ? th->danger : th->accent, bx, by, bw, bh);
-    if (fm) {
-        const char *label = playing ? "■  Stop preview" : "▶  Play preview  (4s per phase)";
-        int tw = text_width(app, fm, label);
-        xft_draw_string(app, draw, fm, playing ? 0xf0e8d8UL : th->accent,
-                        bx + (bw - tw)/2, by + (bh + fm->ascent - fm->descent)/2, label);
-    }
-
-    if (app->cfg_buf)
-        XCopyArea(app->dpy, app->cfg_buf, app->cfg_win, app->gc, 0, 0, W, H, 0, 0);
-    XFlush(app->dpy);
-}
-
 void draw_config(App *app) {
-    if (app->settings_open) {
-        draw_settings(app);
-        return;
-    }
     if (!app->cfg_win) return;
-    if (app->sleep_preview_open) {
-        draw_sleep_preview(app);
-        return;
-    }
-    if (app->help_open) {
-        draw_help(app);
-        return;
-    }
-    if (app->insights_open) {
-        draw_insights(app);
-        return;
-    }
     ensure_cfg_buf(app);
     const Theme *th = cfg_theme(app);
     int W = g_config.cfg_w, H = g_config.cfg_h;
@@ -624,49 +451,6 @@ void create_config_window(App *app) {
     app->cfg_xft = make_xft_draw(app, app->cfg_win);
     app->cursor_blink = 1;
     app->cursor_blink_ts = ms_now();
-}
-
-/* ── Runtime settings button ───────────────────────────────
- * A small always-visible button on the running/paused timer itself, so
- * every option (volumes, timings, ...) stays reachable and editable
- * without knowing the Ctrl+G shortcut — clicking it opens the same
- * Settings overlay Ctrl+G does, live over the running timer. Shared
- * rect/hit-test between the draw and click paths so they can't drift
- * out of sync, same pattern as cfg_footer_rects() above. */
-
-static void timer_settings_btn_rect(int W, int H, int mini, int *x, int *y, int *w, int *h) {
-    (void)H;
-    int sz = mini ? 18 : 30;
-    int pad = mini ? 6 : 14;
-    *w = sz; *h = sz;
-    *x = W - pad - sz;
-    *y = pad;
-}
-
-int timer_settings_btn_hit_test(App *app, int mx, int my) {
-    if (!app->tmr_win) return 0;
-    int x, y, w, h; timer_settings_btn_rect(app->tmr_w, app->tmr_h, app->mini, &x, &y, &w, &h);
-    return mx >= x && mx < x + w && my >= y && my < y + h;
-}
-
-static void draw_timer_settings_btn(App *app, Drawable buf, const Theme *th,
-                                     int W, int H, int mini) {
-    int x, y, w, h; timer_settings_btn_rect(W, H, mini, &x, &y, &w, &h);
-    fill_rect(app, buf, th->surface_soft, x, y, w, h);
-    draw_rect_outline(app, buf, th->border, x, y, w, h);
-
-    /* Simple "hamburger" glyph (three bars) — reads clearly at tiny
-     * sizes, unlike a gear glyph which needs real curves to look right. */
-    int bar_w = w - w/3;
-    int bx = x + (w - bar_w) / 2;
-    int bar_h = mini ? 1 : 2;
-    int gap = (h - bar_h * 3) / 4;
-    int by = y + gap;
-    XSetForeground(app->dpy, app->gc, rgb_pixel(app, th->text_muted));
-    for (int i = 0; i < 3; i++) {
-        XFillRectangle(app->dpy, buf, app->gc, bx, by, bar_w, bar_h);
-        by += bar_h + gap;
-    }
 }
 
 /* ── Sleep-mode indicator badge ────────────────────────────
@@ -842,7 +626,6 @@ void draw_timer_mini(App *app) {
     }
 
     draw_sleep_badge(app, buf, draw, th, W, H, 1);
-    draw_timer_settings_btn(app, buf, th, W, H, 1);
 
     XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);
@@ -958,7 +741,6 @@ static void draw_timer_fullscreen(App *app) {
     }
 
     draw_sleep_badge(app, buf, draw, th, W, H, 0);
-    draw_timer_settings_btn(app, buf, th, W, H, 0);
 
     XCopyArea(app->dpy, buf, app->tmr_win, app->gc, 0, 0, W, H, 0, 0);
     XFlush(app->dpy);

@@ -107,8 +107,8 @@ void config_save(void) {
     FILE *f = fopen(path, "w");
     if (!f) return;
 
-    fprintf(f, "# Timer_C configuration — written by the in-app Settings overlay (Ctrl+G).\n");
-    fprintf(f, "# Format: key = value   Edit by hand or through the app; either is fine.\n\n");
+    fprintf(f, "# TimerC configuration — edit with `timerc config`, or by hand.\n");
+    fprintf(f, "# Format: key = value   Applies to the next timer you start.\n\n");
     const char *cur_cat = NULL;
     for (int i = 0; i < N_CFG_FIELDS; i++) {
         const CfgField *cf = &CFG_FIELDS[i];
@@ -196,6 +196,8 @@ static double dur_sec(const char *s) {
 }
 #define DUR(s)    dur_sec(s)
 #define DUR_MS(s) ((int)(dur_sec(s) * 1000.0 + 0.5))
+
+static int s_skip_file;
 
 void config_load(App *app) {
     (void)app;
@@ -356,13 +358,18 @@ void config_load(App *app) {
     /* Override any of the above with values persisted from a previous
      * run's Settings overlay (Ctrl+G) — see config_save()/CFG_FIELDS
      * above. No file present just means "use the defaults set above". */
-    config_load_file();
+    if (!s_skip_file) config_load_file();
 
     /* ── Cross-field sanity fixups ────────────────────────────
      * Guards against a hand-edit above making two related values
      * contradict each other; a plain clamp, not user-facing validation
      * (there's no file input to validate here anymore). */
 
+    config_normalize();
+}
+
+/* Keeps related values consistent after any edit (hand-edited file or TUI). */
+void config_normalize(void) {
     /* alarm_volume_max_percent can never be below the min — the system
      * volume ramps UP to it, so a ceiling below the starting point is
      * nonsensical. */
@@ -377,4 +384,21 @@ void config_load(App *app) {
     /* A resize-down minimum can never exceed the size it's a minimum of. */
     if (g_config.mini_w_min > g_config.mini_w) g_config.mini_w_min = g_config.mini_w;
     if (g_config.mini_h_min > g_config.mini_h_base) g_config.mini_h_min = g_config.mini_h_base;
+}
+
+/* Fills *out with the built-in defaults, leaving the live g_config untouched. */
+void config_get_defaults(Config *out) {
+    Config keep = g_config;
+    s_skip_file = 1;
+    config_load(NULL);
+    s_skip_file = 0;
+    *out = g_config;
+    g_config = keep;
+}
+
+double cfg_field_get_from(const Config *c, int idx) {
+    if (idx < 0 || idx >= N_CFG_FIELDS) return 0.0;
+    const CfgField *f = &CFG_FIELDS[idx];
+    const void *p = (const char *)c + f->offset;
+    return f->type == CFG_F_DOUBLE ? *(const double *)p : (double)(*(const int *)p);
 }

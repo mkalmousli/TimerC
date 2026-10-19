@@ -171,10 +171,8 @@ static void do_quit(App *app) {
     /* Only forcibly kill audio when leaving an alert (or stopping a sleep
      * timer's ambient loop, or a sleep-preview audition) — cue sounds are
      * short and should play to completion after windows are gone. */
-    if (app->state == STATE_ALERT || app->sleep_mode || app->sleep_preview_open)
+    if (app->state == STATE_ALERT || app->sleep_mode)
         kill_all_audio(app);
-    if (app->sleep_preview) { free(app->sleep_preview); app->sleep_preview = NULL; }
-    app->sleep_preview_open = 0;
     db_finish_session(app, "stopped");
     destroy_alert_windows(app);
     destroy_timer_window(app);
@@ -414,89 +412,10 @@ static void drain_motion(App *app, XEvent *ev, int *rx, int *ry) {
     }
 }
 
-/* "/testsleep <time>" typed into the input, e.g. "/testsleep u6:30" —
- * returns the trimmed time string that follows, or NULL if the input
- * doesn't start with the command. */
-static const char *testsleep_arg(const char *s) {
-    while (*s && isspace((unsigned char)*s)) s++;
-    static const char cmd[] = "/testsleep";
-    size_t n = sizeof(cmd) - 1;
-    if (strncmp(s, cmd, n) != 0) return NULL;
-    const char *after = s + n;
-    if (*after && !isspace((unsigned char)*after)) return NULL;
-    while (*after && isspace((unsigned char)*after)) after++;
-    return after;
-}
-
-static void close_sleep_preview(App *app) {
-    app->sleep_audio_active = 0;
-    kill_all_audio(app);
-    if (app->sleep_preview) { free(app->sleep_preview); app->sleep_preview = NULL; }
-    app->sleep_preview_open = 0;
-}
-
 static void handle_config_key(App *app, XKeyEvent *ev) {
     char buf[32] = "";
     KeySym ks;
     XLookupString(ev, buf, sizeof(buf)-1, &ks, NULL);
-
-    if (app->settings_open) {
-        settings_handle_key(app, ev);
-        return;
-    }
-
-    if (app->insights_open) {
-        ins_handle_key(app, ev);
-        return;
-    }
-
-    /* Ctrl+G opens Settings from the setup screen too (see the tmr_win
-     * KeyPress case below for opening it over a running timer). */
-    if ((ev->state & ControlMask) && (ks == XK_g || ks == XK_G)) {
-        settings_open_overlay(app, 0);
-        return;
-    }
-
-    /* Sleep preview overlay — opened by typing "/testsleep <time>" and
-     * pressing Enter (see below); closed by Esc, same shape as help/
-     * insights. */
-    if (app->sleep_preview_open) {
-        if (ks == XK_Escape) {
-            close_sleep_preview(app);
-            draw_config(app);
-        }
-        return;
-    }
-
-    /* Ctrl+H opens the keybinding help overlay (closed again the same way
-     * Ctrl+I's data browser is: from inside the dispatch above once
-     * help_open is set, never as a toggle in this branch). */
-    if (app->help_open) {
-        if (ks == XK_Escape ||
-            ((ev->state & ControlMask) && (ks == XK_h || ks == XK_H))) {
-            app->help_open = 0;
-            draw_config(app);
-        }
-        return;
-    }
-    if ((ev->state & ControlMask) && (ks == XK_h || ks == XK_H)) {
-        app->help_open = 1;
-        draw_config(app);
-        return;
-    }
-
-    /* Ctrl+I opens the data browser */
-    if ((ev->state & ControlMask) && (ks == XK_i || ks == XK_I)) {
-        ins_enter(app);
-        app->ins_day_offset = 0;
-        app->ins_sel = 0;
-        app->ins_sess_scroll = 0;
-        app->ins_evt_scroll = 0;
-        db_insights_load_day(app, 0);
-        db_log_event(app, "insights_open", NULL);
-        draw_insights(app);
-        return;
-    }
 
     /* Tab (or Ctrl+T) rolls a fresh set of themes, shaped by the current
      * time of day (see day_mood() in draw.c) — every press re-generates
@@ -522,21 +441,6 @@ static void handle_config_key(App *app, XKeyEvent *ev) {
     }
 
     if (ks == XK_Return || ks == XK_KP_Enter) {
-        const char *arg = testsleep_arg(app->input);
-        if (arg) {
-            ParseResult pr; parse_time_input(arg, &pr);
-            if (pr.seconds <= 0) {
-                app_log(app, "WARN", "Invalid /testsleep time: '%s'", arg);
-                return;
-            }
-            if (app->sleep_preview) free(app->sleep_preview);
-            app->sleep_preview = sleep_build_preview((double)pr.seconds);
-            if (!app->sleep_preview) return;
-            snprintf(app->sleep_preview_input, sizeof(app->sleep_preview_input), "%s", app->input);
-            app->sleep_preview_open = 1;
-            draw_config(app);
-            return;
-        }
         ParseResult pr;
         parse_time_input(app->input, &pr);
         if (pr.seconds <= 0) {
@@ -629,37 +533,11 @@ static void handle_event(App *app, XEvent *ev) {
             /* Explicitly restore keyboard focus — override_redirect windows do
              * not receive it automatically when another window takes it. */
             XSetInputFocus(app->dpy, app->cfg_win, RevertToPointerRoot, CurrentTime);
-            if (app->settings_open) {
-                if (ev->xbutton.button == Button1)
-                    settings_handle_click(app, ev->xbutton.x, ev->xbutton.y, 1);
-                break;
-            }
-            if (app->insights_open &&
-                ev->xbutton.button == Button1 &&
-                ins_handle_click(app, ev->xbutton.x, ev->xbutton.y))
-                break;
-            if (app->sleep_preview_open &&
-                ev->xbutton.button == Button1 &&
-                sleep_preview_handle_click(app, ev->xbutton.x, ev->xbutton.y))
-                break;
-            if (app->sleep_preview_open) break; /* no dragging behind the overlay */
             if (ev->xbutton.button == Button2) {
                 play_cue(app, "close");
                 do_quit(app);
                 return;
             } else if (ev->xbutton.button == Button1) {
-                int fb = cfg_footer_hit_test(app, ev->xbutton.x, ev->xbutton.y);
-                if (fb == 1) { settings_open_overlay(app, 0); return; }
-                if (fb == 2) { app->help_open = 1; draw_config(app); return; }
-                if (fb == 3) {
-                    ins_enter(app);
-                    app->ins_day_offset = 0; app->ins_sel = 0;
-                    app->ins_sess_scroll = 0; app->ins_evt_scroll = 0;
-                    db_insights_load_day(app, 0);
-                    db_log_event(app, "insights_open", NULL);
-                    draw_insights(app);
-                    return;
-                }
                 app->cfg_is_dragging = 1;
                 app->cfg_drag_px = ev->xbutton.x_root; app->cfg_drag_py = ev->xbutton.y_root;
                 app->cfg_drag_wx = app->cfg_x;          app->cfg_drag_wy = app->cfg_y;
@@ -672,20 +550,11 @@ static void handle_event(App *app, XEvent *ev) {
             }
             break;
         case ButtonRelease:
-            if (app->settings_open) { settings_handle_release(app); break; }
             if (app->cfg_is_dragging)
                 XUngrabPointer(app->dpy, CurrentTime);
             app->cfg_is_dragging = 0;
             break;
         case MotionNotify:
-            if (app->settings_open) {
-                settings_handle_motion(app, ev->xmotion.x, ev->xmotion.y);
-                break;
-            }
-            {
-                int fh = cfg_footer_hit_test(app, ev->xmotion.x, ev->xmotion.y);
-                if (fh != app->cfg_footer_hover) { app->cfg_footer_hover = fh; draw_config(app); }
-            }
             if (app->cfg_is_dragging) {
                 int rx, ry;
                 drain_motion(app, ev, &rx, &ry);
@@ -714,8 +583,6 @@ static void handle_event(App *app, XEvent *ev) {
         case KeyPress: {
             KeySym ks = XLookupKeysym(&ev->xkey, 0);
             if (ks == XK_space && app->pausable) toggle_pause(app);
-            else if ((ev->xkey.state & ControlMask) && (ks == XK_g || ks == XK_G))
-                settings_open_overlay(app, 1);
             break;
         }
         case ButtonPress: {
@@ -727,7 +594,6 @@ static void handle_event(App *app, XEvent *ev) {
             }
             if (ev->xbutton.button == Button3) { toggle_mini_fullscreen(app); return; }
             if (ev->xbutton.button == Button1) {
-                if (timer_settings_btn_hit_test(app, bx, by)) { settings_open_overlay(app, 1); return; }
                 if (app->mini) {
                     if (bx >= app->tmr_w - g_config.resize_zone && by >= app->tmr_h - g_config.resize_zone) {
                         app->is_resizing = 1;
@@ -842,46 +708,6 @@ static void handle_event(App *app, XEvent *ev) {
 static void do_config_tick(App *app) {
     long now_ms = ms_now();
 
-    if (app->settings_open) {
-        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
-        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
-            if (app->cfg_win && app->state == STATE_CONFIG)
-                draw_settings(app);
-            app->cfg_anim_last_ms = now_ms;
-        }
-        return;
-    }
-
-    if (app->insights_open) {
-        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
-        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
-            if (app->cfg_win && app->state == STATE_CONFIG)
-                draw_insights(app);
-            app->cfg_anim_last_ms = now_ms;
-        }
-        return;
-    }
-
-    if (app->help_open) {
-        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
-        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
-            if (app->cfg_win && app->state == STATE_CONFIG)
-                draw_help(app);
-            app->cfg_anim_last_ms = now_ms;
-        }
-        return;
-    }
-
-    if (app->sleep_preview_open) {
-        if (!app->cfg_anim_last_ms) app->cfg_anim_last_ms = now_ms;
-        if (now_ms - app->cfg_anim_last_ms >= g_config.tick_config_anim_ms) {
-            if (app->cfg_win && app->state == STATE_CONFIG)
-                draw_sleep_preview(app);
-            app->cfg_anim_last_ms = now_ms;
-        }
-        return;
-    }
-
     if (now_ms - app->cursor_blink_ts > 530) {
         app->cursor_blink = !app->cursor_blink;
         app->cursor_blink_ts = now_ms;
@@ -987,9 +813,6 @@ static int app_init(App *app) {
     app->blink_ts   = ms_now();
     app->quote_idx = -1;
     app->quote_next_idx = -1;
-    app->settings_cat = -1;
-    app->settings_drag_field = -1;
-    app->settings_edit_field = -1;
     app->quote_cycle_ts = 0;
     app->quote_mask_idx[0] = -1;
     app->quote_mask_idx[1] = -1;
@@ -1041,9 +864,11 @@ static void print_usage(const char *prog) {
         "Time formats: 25m  1h30m  45  30:00  1:30:00  u15:30  u1520\n"
         "Switches (prefix):  d=shutdown  a=alert  f/r=fullscreen  p=pausable  l=lock input\n"
         "Options: -m alert|shutdown  -p  -f  -l  --theme NAME  --gl  -V  -h\n"
+        "Terminal UIs: %s config | insights | about   (settings, statistics, help)\n"
+        "              %s config list|get KEY|set KEY VALUE|reset\n"
         "Subcommand: %s test preparing|sleeping|waking|alarm|all  (audition sleep-mode audio)\n"
         "Example: %s 25m focus  |  %s u16:30 meeting  |  %s\n",
-        prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog);
 }
 
 /* ── `timer test` — foreground CLI audition of the procedurally
@@ -1192,6 +1017,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (argc > 1 && (!strcmp(argv[1], "config") || !strcmp(argv[1], "settings") ||
+                     !strcmp(argv[1], "insights") || !strcmp(argv[1], "stats") ||
+                     !strcmp(argv[1], "about")))
+        return cli_main(argv[1], argc - 1, argv + 1);
     if (argc > 1 && !strcmp(argv[1], "test")) {
         return run_test_command(argc, argv);
     }

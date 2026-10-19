@@ -3,7 +3,7 @@
  * These prototypes previously lived in the "draw.c" section of the old
  * monolithic timer.h; they're unchanged, just given their own header
  * now that the implementation is split across draw_common.c/
- * draw_timer.c/draw_settings.c/draw_insights.c/draw_alert.c/draw_help.c.
+ * draw_timer.c/draw_alert.c.
  */
 #ifndef UI_H
 #define UI_H
@@ -22,32 +22,14 @@ void draw_config(App *app);
 void draw_config_anim(App *app);
 void draw_config_panel(App *app);
 void cfg_redraw_after_input(App *app);
-void draw_help(App *app);
-int  cfg_footer_hit_test(App *app, int mx, int my);
-void draw_sleep_preview(App *app);
-int  sleep_preview_handle_click(App *app, int mx, int my);
 
-/* Settings overlay (Ctrl+G) — item 3 */
-void draw_settings(App *app);
-int  settings_handle_click(App *app, int mx, int my, int is_press);
-int  settings_handle_motion(App *app, int mx, int my);
-void settings_handle_release(App *app);
-void settings_handle_key(App *app, XKeyEvent *ev);
-void settings_open_overlay(App *app, int from_timer);
-void settings_close_overlay(App *app);
 
 /* Fullscreen alert volume slider — item 5 */
 int  alert_vol_handle_click(App *app, int screen_idx, int mx, int my);
 int  alert_vol_handle_motion(App *app, int screen_idx, int mx, int my);
 void alert_vol_handle_release(App *app);
 
-void ins_enter(App *app);
-void ins_leave(App *app);
-void draw_insights(App *app);
-void ins_handle_key(App *app, XKeyEvent *ev);
-int  ins_handle_click(App *app, int mx, int my);
 void draw_timer(App *app);
-int  timer_settings_btn_hit_test(App *app, int mx, int my);
 void draw_alert(App *app);
 void create_config_window(App *app);
 void create_timer_window(App *app);

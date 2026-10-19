@@ -168,6 +168,11 @@ extern const CfgField CFG_FIELDS[];
 extern const int      N_CFG_FIELDS;
 double cfg_field_get(int idx);
 void   cfg_field_set(int idx, double v);
+double cfg_field_get_from(const Config *c, int idx);
+void   config_normalize(void);
+void   config_get_defaults(Config *out);
+/* Terminal UI + scripting commands: config, insights, about (src/cli/tui.c) */
+int    cli_main(const char *cmd, int argc, char **argv);
 
 /* ── Enums ─────────────────────────────────────────────── */
 
@@ -405,34 +410,9 @@ typedef struct {
     int        theme_idx;
     int        cfg_focused;   /* 1 = config window has keyboard focus */
 
-    /* Help overlay (Ctrl+H, on the start screen) */
-    int        help_open;
-
-    /* Settings overlay (Ctrl+G) — reachable from the setup screen AND
-     * (by mapping cfg_win on top of tmr_win) while a timer is running.
-     * settings_cat < 0 shows the top-level category list; otherwise it's
-     * the index of the category being drilled into. settings_from_timer
-     * remembers whether it was opened over a running timer, so closing
-     * it knows to withdraw cfg_win again instead of leaving it mapped. */
-    int        settings_open;
-    int        settings_cat;
-    int        settings_from_timer;
-    int        settings_drag_field;   /* index into CFG_FIELDS, or -1 */
-    int        settings_edit_field;   /* duration field being typed into, or -1 */
-    char       settings_edit_buf[32];
-    int        settings_edit_len, settings_edit_cursor;
-    int        settings_sleep_test_active;
-    long       settings_test_started_ms;
-    int        cfg_footer_hover;      /* 1-based footer button under pointer, 0 none */
-
     /* Fullscreen-alert volume slider (item 5) — dragging it live-adjusts
      * whichever volume is currently active (alarm or sleep-waking). */
     int        alert_vol_dragging;
-
-    /* Sleep preview overlay — typed "/testsleep <time>" then Enter */
-    int               sleep_preview_open;
-    SleepPreviewData *sleep_preview;
-    char              sleep_preview_input[MAX_INPUT];
 
     /* Insights browser (Ctrl+I) */
     int        insights_open;
@@ -612,31 +592,13 @@ void draw_config(App *app);
 void draw_config_anim(App *app);
 void draw_config_panel(App *app);
 void cfg_redraw_after_input(App *app);
-void draw_help(App *app);
-void draw_sleep_preview(App *app);
-int  sleep_preview_handle_click(App *app, int mx, int my);
 
-/* Settings overlay (Ctrl+G) — item 3 */
-void draw_settings(App *app);
-int  cfg_footer_hit_test(App *app, int mx, int my);
-int  timer_settings_btn_hit_test(App *app, int mx, int my);
-int  settings_handle_click(App *app, int mx, int my, int is_press);
-int  settings_handle_motion(App *app, int mx, int my);
-void settings_handle_release(App *app);
-void settings_handle_key(App *app, XKeyEvent *ev);
-void settings_open_overlay(App *app, int from_timer);
-void settings_close_overlay(App *app);
 
 /* Fullscreen alert volume slider — item 5 */
 int  alert_vol_handle_click(App *app, int screen_idx, int mx, int my);
 int  alert_vol_handle_motion(App *app, int screen_idx, int mx, int my);
 void alert_vol_handle_release(App *app);
 
-void ins_enter(App *app);
-void ins_leave(App *app);
-void draw_insights(App *app);
-void ins_handle_key(App *app, XKeyEvent *ev);
-int  ins_handle_click(App *app, int mx, int my);
 void draw_timer(App *app);
 void draw_alert(App *app);
 void create_config_window(App *app);

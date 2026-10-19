@@ -79,21 +79,20 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 - **Procedural audio** — start/pause/half-time/last-seconds cues and a ramping alarm, synthesised in
   code (no audio files). Plays through `aplay`, `pacat`, `pw-play`, `ffplay` or `mpv`.
 - **Sleep mode** — rain/drone ambience that fades in, sustains and wakes you gently; `/testsleep 8h` previews the plan.
-- **Insights** (`Ctrl+I`) — daily/weekly stats, streaks, hourly heatmap and a per-session event log, all local in SQLite.
-- **In-app Settings** (`Ctrl+G`) — every tunable live-editable: alarm volume/ramp, timing, window size, startup defaults.
+- **Insights in the terminal** (`timerc insights`) — daily/weekly stats, hourly heatmap and a per-session event log, all local in SQLite.
+- **Settings in the terminal** (`timerc config`) — a small TUI for every tunable, plus `config list|get|set|reset` for scripts.
+- **A minimal GUI** — the window only does three things: take your input, show the timer, ring the alarm.
 - **Input lock** (`-l`) — optionally disconnects USB keyboard/mouse at kernel level for deep focus, with a watchdog that always gives them back.
-- **Shutdown mode**, until-time timers, multi-monitor aware, help overlay (`Ctrl+H`).
+- **Shutdown mode**, until-time timers, multi-monitor aware, `timerc about` for syntax and keys.
 
 ## Screenshots
 
 | | | |
 |---|---|---|
-| ![Setup](docs/assets/01-setup.png) | ![Typing](docs/assets/02-setup-typing.png) | ![Help](docs/assets/03-help.png) |
-| Setup | Live parsing | Help overlay (`Ctrl+H`) |
-| ![Settings](docs/assets/04-settings.png) | ![Alarm settings](docs/assets/05-settings-alarm.png) | ![Sleep](docs/assets/07-sleep-preview.png) |
-| Settings (`Ctrl+G`) | Alarm options | Sleep-mode plan |
-
-![Insights](docs/assets/06-insights.png)
+| ![Setup](docs/assets/01-setup.png) | ![Typing](docs/assets/02-setup-typing.png) | ![About](docs/assets/03-about.png) |
+| Setup | Live parsing | `timerc about` |
+| ![Settings](docs/assets/04-settings.png) | ![Insights](docs/assets/06-insights.png) | |
+| `timerc config` | `timerc insights` | |
 
 | Mini timer | Fullscreen | Alert |
 |---|---|---|
@@ -105,7 +104,6 @@ Switch letters can be combined in any order: `fp25m`, `dp30m`. Options: `-m aler
 |---|---|
 | `Enter` | Start | 
 | `Tab` / `Ctrl+T` | Cycle theme |
-| `Ctrl+G` / `Ctrl+H` / `Ctrl+I` | Settings / Help / Insights |
 | `Space` | Pause / resume (if pausable) |
 | Right-click | Toggle mini ↔ fullscreen |
 | Middle-click | Stop |
@@ -143,7 +141,8 @@ TimerC dies. Only USB keyboards/mice are covered.
 
 ```
 src/core      app, config, parsing, database
-src/ui        screens (timer, settings, insights, alert, help)
+src/ui        GUI screens (setup, timer, alert)
+src/cli       terminal UI (config, insights, about)
 src/audio     procedural synthesis
 src/platform  Linux backend (audio, fs, lock)
 ```
